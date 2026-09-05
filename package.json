@@ -1,0 +1,12 @@
+{
+  "name": "dealflow360",
+  "version": "1.0.0",
+  "description": "DealFlow360 — An Intelligent, Self-Governing Sales Operations Platform",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js",
+    "reset": "node -e \"require('fs').rmSync('data',{recursive:true,force:true}); console.log('database reset — restart to reseed')\""
+  },
+  "engines": { "node": ">=22.5" }
+}

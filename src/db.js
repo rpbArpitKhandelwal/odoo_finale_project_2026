@@ -589,12 +589,12 @@ async function seed() {
     const q1039 = await one('SELECT id FROM quotations WHERE number=?', 'QT-1039');
     const l1039 = await Q('SELECT * FROM quotation_lines WHERE quotation_id=?', [q1039.id], c);
     const oneTimeAmount = l1039.filter((l) => l.line_type === 'one_time').reduce((s, l) => s + l.qty * l.unit_price * (1 - l.discount_pct / 100), 0);
-    const inv1 = (await run(insI, 'INV-2031', q1039.id, gamma, 'one_time', Math.round(oneTimeAmount * 1.05), 'paid', daysAgo(16), daysAgo(15), daysAgo(17))).lastInsertRowid;
-    await run(insPay, inv1, Math.round(oneTimeAmount * 1.05), 'bank_transfer', 'TXN-88121', daysAgo(15));
+    const inv1 = (await run(insI, 'INV-2031', q1039.id, gamma, 'one_time', Math.round(oneTimeAmount * 1.08 * 100) / 100, 'paid', daysAgo(16), daysAgo(15), daysAgo(17))).lastInsertRowid;
+    await run(insPay, inv1, Math.round(oneTimeAmount * 1.08 * 100) / 100, 'bank_transfer', 'TXN-88121', daysAgo(15));
     const secLine = l1039.find((l) => l.line_type === 'subscription');
     if (secLine) {
-      const inv2 = (await run(insI, 'INV-2032', q1039.id, gamma, 'recurring', Math.round(secLine.qty * secLine.unit_price * 1.05), 'paid', daysAgo(16), daysAgo(15), daysAgo(17))).lastInsertRowid;
-      await run(insPay, inv2, Math.round(secLine.qty * secLine.unit_price * 1.05), 'bank_transfer', 'TXN-88122', daysAgo(15));
+      const inv2 = (await run(insI, 'INV-2032', q1039.id, gamma, 'recurring', Math.round(secLine.qty * secLine.unit_price * 1.05 * 100) / 100, 'paid', daysAgo(16), daysAgo(15), daysAgo(17))).lastInsertRowid;
+      await run(insPay, inv2, Math.round(secLine.qty * secLine.unit_price * 1.05 * 100) / 100, 'bank_transfer', 'TXN-88122', daysAgo(15));
       for (let i = 1; i <= 4; i++) {
         const d = new Date(now + i * 90 * 86400000).toISOString().slice(0, 10);
         await run(insBS, q1039.id, secLine.id, d, `Security Suite — cycle ${i + 1} (4 units)`, secLine.qty * secLine.unit_price, 'scheduled', null);
@@ -607,7 +607,7 @@ async function seed() {
     // QT-1025 (Gamma slippage): open invoice -> payment demo target
     const q1025 = await one('SELECT id FROM quotations WHERE number=?', 'QT-1025');
     const l1025 = await Q('SELECT * FROM quotation_lines WHERE quotation_id=?', [q1025.id], c);
-    const amt1025 = Math.round(l1025.reduce((s, l) => s + l.qty * l.unit_price, 0) * 1.05);
+    const amt1025 = Math.round(l1025.reduce((s, l) => s + l.qty * l.unit_price, 0) * 1.08 * 100) / 100;
     await run(insI, 'INV-2044', q1025.id, gamma, 'one_time', amt1025, 'open', daysAhead(9), null, daysAgo(6));
     for (const l of l1025) await run(insFS, q1025.id, l.id, main, Math.ceil(l.qty / 2), 'shipped', 18, daysAgo(4));
     await run(insFS, q1025.id, l1025[1].id, main, l1025[1].qty - Math.ceil(l1025[1].qty / 2), 'backorder', 0, null);

@@ -84,7 +84,7 @@ r.get('/portal/quote/:number/invoice/:invId/pdf', requirePortal, async (req, res
   const meta = [
     `Customer: ${cust ? cust.name : ''}${cust ? ` (${cust.tier} partner)` : ''}`,
     `Quotation: ${q.number}   Type: ${inv.kind.replace(/_/g, ' ')}   Status: ${inv.status.toUpperCase()}`,
-    `Issued: ${String(inv.created_at || '').slice(0, 10)}   Due: ${inv.due_date || '—'}${inv.paid_at ? `   Paid: ${String(inv.paid_at).slice(0, 10)}` : ''}`,
+    `Issued: ${String(inv.created_at || '').slice(0, 10)}   Due: ${String(inv.due_date || '').slice(0, 10) || '-'}${inv.paid_at ? `   Paid: ${String(inv.paid_at).slice(0, 10)}` : ''}`,
   ];
   res.setHeader('Content-Type', 'application/pdf');
   res.setHeader('Content-Disposition', `attachment; filename="${inv.number}.pdf"`);

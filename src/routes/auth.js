@@ -22,7 +22,7 @@ r.post('/auth/signup', async (req, res) => {
 
 r.post('/auth/login', async (req, res) => {
   const { email, password } = req.body || {};
-  const user = await ONE('SELECT * FROM users WHERE email=? AND active=1', [String(email || '').toLowerCase()]);
+  const user = await ONE('SELECT * FROM users WHERE email=? AND active', [String(email || '').toLowerCase()]);
   if (!user || !verifyPassword(password || '', user.password)) return res.status(401).json({ error: 'Invalid email or password' });
   const token = await createSession(user.id);
   setCookie(res, COOKIE, token, 7 * 86400);
@@ -43,7 +43,7 @@ r.get('/auth/me', requireAuth, (req, res) => res.json({ user: pubUser(req.user) 
 r.post('/auth/portal/login', async (req, res) => {
   const { email, password } = req.body || {};
   const user = await ONE(`SELECT u.*, c.name customer_name FROM users u JOIN customers c ON c.id=u.customer_id
-    WHERE u.email=? AND u.role='customer' AND u.active=1`, [String(email || '').toLowerCase()]);
+    WHERE u.email=? AND u.role='customer' AND u.active`, [String(email || '').toLowerCase()]);
   if (!user || !verifyPassword(password || '', user.password)) return res.status(401).json({ error: 'Invalid portal credentials' });
   const token = await createSession(user.id);
   setCookie(res, PORTAL_COOKIE, token, 7 * 86400);

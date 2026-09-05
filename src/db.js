@@ -97,7 +97,7 @@ CREATE TABLE IF NOT EXISTS users (
   role TEXT NOT NULL CHECK(role IN ('admin','manager','finance','salesrep','customer')),
   customer_id INTEGER,
   sales_team TEXT NOT NULL DEFAULT 'Direct',
-  active SMALLINT DEFAULT 1,
+  active BOOLEAN DEFAULT true,
   created_at TEXT DEFAULT (${NOW_ISO})
 );
 CREATE TABLE IF NOT EXISTS sessions (
@@ -132,9 +132,9 @@ CREATE TABLE IF NOT EXISTS products (
   unit TEXT DEFAULT 'units',
   tax_rate DOUBLE PRECISION DEFAULT 0,
   description TEXT DEFAULT '',
-  promoted SMALLINT DEFAULT 0,
-  stocked SMALLINT DEFAULT 1,
-  active SMALLINT DEFAULT 1
+  promoted BOOLEAN DEFAULT false,
+  stocked BOOLEAN DEFAULT true,
+  active BOOLEAN DEFAULT true
 );
 CREATE TABLE IF NOT EXISTS product_variants (
   id SERIAL PRIMARY KEY,
@@ -150,7 +150,7 @@ CREATE TABLE IF NOT EXISTS price_lists (
   currency TEXT NOT NULL DEFAULT 'USD',
   rule_type TEXT NOT NULL DEFAULT 'discount' CHECK(rule_type IN ('discount','markup')),
   value DOUBLE PRECISION NOT NULL,
-  active SMALLINT DEFAULT 1
+  active BOOLEAN DEFAULT true
 );
 CREATE TABLE IF NOT EXISTS discount_tiers (
   id SERIAL PRIMARY KEY,
@@ -165,7 +165,7 @@ CREATE TABLE IF NOT EXISTS approval_rules (
   risk_max DOUBLE PRECISION NOT NULL,
   any_line_over DOUBLE PRECISION,
   sequence INTEGER NOT NULL DEFAULT 1,
-  active SMALLINT DEFAULT 1
+  active BOOLEAN DEFAULT true
 );
 CREATE TABLE IF NOT EXISTS warehouses (
   id SERIAL PRIMARY KEY,
@@ -173,7 +173,7 @@ CREATE TABLE IF NOT EXISTS warehouses (
   code TEXT NOT NULL UNIQUE,
   shipping_cost_weight DOUBLE PRECISION NOT NULL DEFAULT 1.0,
   address TEXT DEFAULT '',
-  active SMALLINT DEFAULT 1
+  active BOOLEAN DEFAULT true
 );
 CREATE TABLE IF NOT EXISTS stock_levels (
   id SERIAL PRIMARY KEY,
@@ -192,7 +192,7 @@ CREATE TABLE IF NOT EXISTS subscription_plans (
   cancellation_policy TEXT NOT NULL DEFAULT 'refund_prorated' CHECK(cancellation_policy IN ('refund_prorated','refund_pct','none')),
   refund_pct DOUBLE PRECISION DEFAULT 0,
   notice_days INTEGER DEFAULT 0,
-  active SMALLINT DEFAULT 1
+  active BOOLEAN DEFAULT true
 );
 CREATE TABLE IF NOT EXISTS product_plans (
   id SERIAL PRIMARY KEY,
@@ -207,7 +207,7 @@ CREATE TABLE IF NOT EXISTS upsell_rules (
   suggested_product_id INTEGER NOT NULL,
   co_score DOUBLE PRECISION NOT NULL DEFAULT 0.5,
   source TEXT DEFAULT 'history',
-  active SMALLINT DEFAULT 1,
+  active BOOLEAN DEFAULT true,
   UNIQUE(trigger_product_id, suggested_product_id)
 );
 CREATE TABLE IF NOT EXISTS quotations (
@@ -245,7 +245,7 @@ CREATE TABLE IF NOT EXISTS quotation_lines (
   plan_id INTEGER,
   billing_period TEXT,
   sort INTEGER DEFAULT 0,
-  dismissed SMALLINT DEFAULT 0
+  dismissed BOOLEAN DEFAULT false
 );
 CREATE TABLE IF NOT EXISTS approvals (
   id SERIAL PRIMARY KEY,
@@ -349,7 +349,7 @@ CREATE TABLE IF NOT EXISTS commission_rules (
   rate_type TEXT NOT NULL DEFAULT 'percentage' CHECK(rate_type IN ('percentage','fixed','margin_tier')),
   rate DOUBLE PRECISION NOT NULL DEFAULT 3,
   margin_tiers JSONB,
-  active SMALLINT DEFAULT 1,
+  active BOOLEAN DEFAULT true,
   created_at TEXT DEFAULT (${NOW_ISO})
 );
 CREATE TABLE IF NOT EXISTS commissions (
@@ -413,20 +413,20 @@ async function seed() {
 
     /* --- products --- */
     const insP = 'INSERT INTO products(name,sku,category_id,product_type,base_price,cost_price,unit,tax_rate,description,promoted,stocked) VALUES(?,?,?,?,?,?,?,?,?,?,?)';
-    const laptop = (await run(insP, 'Laptop Pro 15"', 'LP-15', hw, 'one_time', 1299, 940, 'units', 8, '15" enterprise laptop, i7, 16GB, 512GB SSD', 0, 1)).lastInsertRowid;
-    const ultra = (await run(insP, 'Laptop Ultra 14"', 'LU-14', hw, 'one_time', 1799, 1310, 'units', 8, '14" ultralight, i9, premium build', 0, 1)).lastInsertRowid;
-    const monitor = (await run(insP, '27" 4K Monitor', 'MON-4K27', hw, 'one_time', 449, 290, 'units', 8, '27-inch 4K IPS display', 1, 1)).lastInsertRowid;
-    const mouse = (await run(insP, 'Wireless Mouse', 'MOU-W1', hw, 'one_time', 59, 22, 'units', 8, 'Ergonomic wireless mouse', 0, 1)).lastInsertRowid;
-    const kbd = (await run(insP, 'Mechanical Keyboard', 'KBD-M1', hw, 'one_time', 129, 58, 'units', 8, 'Backlit mechanical keyboard', 0, 1)).lastInsertRowid;
-    const router = (await run(insP, 'Wi-Fi 6 Router', 'RTR-W6', hw, 'one_time', 199, 105, 'units', 8, 'Mesh-capable Wi-Fi 6 router', 0, 1)).lastInsertRowid;
-    const dock = (await run(insP, 'USB-C Docking Station', 'DOCK-C1', acc, 'one_time', 249, 140, 'units', 8, '12-in-1 USB-C dock', 0, 1)).lastInsertRowid;
-    const sleeve = (await run(insP, 'Laptop Sleeve', 'SLV-15', acc, 'one_time', 39, 12, 'units', 8, 'Padded 15" sleeve', 0, 1)).lastInsertRowid;
-    const install = (await run(insP, 'Installation & Setup', 'SVC-INST', svc, 'one_time', 299, 180, 'visit', 10, 'Onsite installation and configuration', 0, 0)).lastInsertRowid;
-    const training = (await run(insP, 'Onsite Training Day', 'SVC-TRN', svc, 'one_time', 549, 360, 'day', 10, 'Full-day hands-on team training', 0, 0)).lastInsertRowid;
-    const warranty = (await run(insP, 'Extended Warranty 3yr', 'SVC-WAR3', svc, 'one_time', 219, 90, 'units', 10, '3-year next-business-day warranty', 0, 0)).lastInsertRowid;
-    const backup = (await run(insP, 'Cloud Backup Pro', 'SUB-BKP', sub, 'subscription', 0, 6, 'users', 5, 'Automated cloud backup, per user', 1, 0)).lastInsertRowid;
-    const support = (await run(insP, 'Premium Support Plan', 'SUB-SUP', sub, 'subscription', 0, 700, 'units', 5, '24/7 premium support, yearly', 0, 0)).lastInsertRowid;
-    const security = (await run(insP, 'Security Suite', 'SUB-SEC', sub, 'subscription', 0, 120, 'units', 5, 'Managed endpoint security, quarterly', 1, 0)).lastInsertRowid;
+    const laptop = (await run(insP, 'Laptop Pro 15"', 'LP-15', hw, 'one_time', 1299, 940, 'units', 8, '15" enterprise laptop, i7, 16GB, 512GB SSD', false, true)).lastInsertRowid;
+    const ultra = (await run(insP, 'Laptop Ultra 14"', 'LU-14', hw, 'one_time', 1799, 1310, 'units', 8, '14" ultralight, i9, premium build', false, true)).lastInsertRowid;
+    const monitor = (await run(insP, '27" 4K Monitor', 'MON-4K27', hw, 'one_time', 449, 290, 'units', 8, '27-inch 4K IPS display', true, true)).lastInsertRowid;
+    const mouse = (await run(insP, 'Wireless Mouse', 'MOU-W1', hw, 'one_time', 59, 22, 'units', 8, 'Ergonomic wireless mouse', false, true)).lastInsertRowid;
+    const kbd = (await run(insP, 'Mechanical Keyboard', 'KBD-M1', hw, 'one_time', 129, 58, 'units', 8, 'Backlit mechanical keyboard', false, true)).lastInsertRowid;
+    const router = (await run(insP, 'Wi-Fi 6 Router', 'RTR-W6', hw, 'one_time', 199, 105, 'units', 8, 'Mesh-capable Wi-Fi 6 router', false, true)).lastInsertRowid;
+    const dock = (await run(insP, 'USB-C Docking Station', 'DOCK-C1', acc, 'one_time', 249, 140, 'units', 8, '12-in-1 USB-C dock', false, true)).lastInsertRowid;
+    const sleeve = (await run(insP, 'Laptop Sleeve', 'SLV-15', acc, 'one_time', 39, 12, 'units', 8, 'Padded 15" sleeve', false, true)).lastInsertRowid;
+    const install = (await run(insP, 'Installation & Setup', 'SVC-INST', svc, 'one_time', 299, 180, 'visit', 10, 'Onsite installation and configuration', false, false)).lastInsertRowid;
+    const training = (await run(insP, 'Onsite Training Day', 'SVC-TRN', svc, 'one_time', 549, 360, 'day', 10, 'Full-day hands-on team training', false, false)).lastInsertRowid;
+    const warranty = (await run(insP, 'Extended Warranty 3yr', 'SVC-WAR3', svc, 'one_time', 219, 90, 'units', 10, '3-year next-business-day warranty', false, false)).lastInsertRowid;
+    const backup = (await run(insP, 'Cloud Backup Pro', 'SUB-BKP', sub, 'subscription', 0, 6, 'users', 5, 'Automated cloud backup, per user', true, false)).lastInsertRowid;
+    const support = (await run(insP, 'Premium Support Plan', 'SUB-SUP', sub, 'subscription', 0, 700, 'units', 5, '24/7 premium support, yearly', false, false)).lastInsertRowid;
+    const security = (await run(insP, 'Security Suite', 'SUB-SEC', sub, 'subscription', 0, 120, 'units', 5, 'Managed endpoint security, quarterly', true, false)).lastInsertRowid;
 
     const insV = 'INSERT INTO product_variants(product_id,attribute,value,extra_price) VALUES(?,?,?,?)';
     await run(insV, laptop, 'Configuration', 'Standard (16GB/512GB)', 0);

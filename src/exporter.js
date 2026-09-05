@@ -36,7 +36,7 @@ ${footer ? row(footer, 't') : ''}
 }
 
 /* ---------- PDF (minimal built-from-scratch generator: Helvetica, table layout) ---------- */
-function buildPDF(title, headers, rows, footer) {
+function buildPDF(title, headers, rows, footer, meta) {
   const PAGE_W = 842, PAGE_H = 595; // A4 landscape
   const M = 36;
   const colW = (PAGE_W - 2 * M) / headers.length;
@@ -52,6 +52,14 @@ function buildPDF(title, headers, rows, footer) {
   text(M, PAGE_H - 42, 17, title, { white: false, bold: true });
   text(M, PAGE_H - 60, 9, `Generated ${new Date().toISOString().slice(0, 16).replace('T', ' ')} UTC · ${rows.length} records`, { gray: 0.35 });
   y = PAGE_H - 96;
+  // optional meta block (invoice documents: customer, dates, coverage note)
+  if (Array.isArray(meta)) {
+    for (const line of meta) {
+      text(M, y, 9, line, { gray: 0.25 });
+      y -= 13;
+    }
+    y -= 6;
+  }
   // table header
   rect(M, y - 5, PAGE_W - 2 * M, 18, 0.9);
   headers.forEach((h, i) => text(M + 4 + i * colW, y + 7, 8, h, { bold: true }));

@@ -122,6 +122,32 @@ CREATE TABLE IF NOT EXISTS stock_levels (
   replenishment_qty INTEGER DEFAULT 0,
   UNIQUE(warehouse_id, product_id)
 );
+CREATE TABLE IF NOT EXISTS subscription_plans (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  billing_period TEXT NOT NULL CHECK(billing_period IN ('monthly','quarterly','yearly')),
+  proration_rule TEXT NOT NULL DEFAULT 'daily' CHECK(proration_rule IN ('daily','none')),
+  cancellation_policy TEXT NOT NULL DEFAULT 'refund_prorated' CHECK(cancellation_policy IN ('refund_prorated','refund_pct','none')),
+  refund_pct REAL DEFAULT 0,
+  notice_days INTEGER DEFAULT 0,
+  active INTEGER DEFAULT 1
+);
+CREATE TABLE IF NOT EXISTS product_plans (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  product_id INTEGER NOT NULL,
+  plan_id INTEGER NOT NULL,
+  recurring_price REAL NOT NULL,
+  UNIQUE(product_id, plan_id)
+);
+CREATE TABLE IF NOT EXISTS upsell_rules (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  trigger_product_id INTEGER NOT NULL,
+  suggested_product_id INTEGER NOT NULL,
+  co_score REAL NOT NULL DEFAULT 0.5,
+  source TEXT DEFAULT 'history',
+  active INTEGER DEFAULT 1,
+  UNIQUE(trigger_product_id, suggested_product_id)
+);
 `;
 
 

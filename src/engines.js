@@ -5,7 +5,7 @@ const { Q, ONE, RUN, getSetting, NOW_ISO, TODAY } = require('./db');
 /* ============ 1. PRICING ENGINE ============ */
 /* Price for a product for a given customer: base + variant extra + tier price list rule (matched on tier + currency). */
 async function tierPriceRule(tier, currency) {
-  return ONE(`SELECT * FROM price_lists WHERE active=1 AND customer_tier=? AND currency=? ORDER BY value DESC`, [tier, currency]);
+  return ONE(`SELECT * FROM price_lists WHERE active AND customer_tier=? AND currency=? ORDER BY value DESC`, [tier, currency]);
 }
 async function unitPriceFor(productId, variantId, customer) {
   const p = await ONE('SELECT * FROM products WHERE id=?', [productId]);
@@ -71,7 +71,7 @@ async function computeRisk(quotation) {
 }
 async function requiredApprovalLevel(quotation) {
   const risk = await computeRisk(quotation);
-  const rules = await Q('SELECT * FROM approval_rules WHERE active=1 ORDER BY sequence DESC');
+  const rules = await Q('SELECT * FROM approval_rules WHERE active ORDER BY sequence DESC');
   let level = 'none';
   if (risk.risk_score <= 0) return { level: 'none', risk };
   for (const r of rules) {
@@ -119,7 +119,7 @@ async function upsellSuggestions(quotationId) {
   const scores = new Map(); // product_id -> best score
   for (const l of lines) {
     const rules = await Q(`SELECT u.*, p.promoted FROM upsell_rules u JOIN products p ON p.id=u.suggested_product_id
-      WHERE u.trigger_product_id=? AND u.active=1 AND p.active=1`, [l.product_id]);
+      WHERE u.trigger_product_id=? AND u.active AND p.active`, [l.product_id]);
     for (const r of rules) {
       if (inCart.has(r.suggested_product_id) || dismissed.has(r.suggested_product_id)) continue;
       const score = r.co_score + (r.promoted ? 0.15 : 0);
@@ -159,8 +159,8 @@ async function upsellSuggestions(quotationId) {
  */
 async function suggestSplit(quotationId) {
   const lines = await Q(`SELECT l.*, p.stocked, p.name FROM quotation_lines l JOIN products p ON p.id=l.product_id
-    WHERE l.quotation_id=? AND p.stocked=1 AND l.line_type='one_time'`, [quotationId]);
-  const warehouses = await Q('SELECT * FROM warehouses WHERE active=1');
+    WHERE l.quotation_id=? AND p.stocked AND l.line_type='one_time'`, [quotationId]);
+  const warehouses = await Q('SELECT * FROM warehouses WHERE active');
   const baseShip = parseFloat(await getSetting('base_ship_cost', 18));
   const usedWH = new Set();
   const plan = []; let shipments = 0; let estCost = 0;
@@ -378,7 +378,7 @@ async function generateCommissionsForInvoice(invoiceId, actor) {
   const already = await ONE('SELECT COUNT(*) c FROM commissions WHERE invoice_id=?', [invoiceId]);
   if (already.c > 0) return [];
   const lines = await Q(`SELECT l.product_id, p.category_id FROM quotation_lines l JOIN products p ON p.id=l.product_id WHERE l.quotation_id=?`, [inv.qid]);
-  const rules = (await Q('SELECT * FROM commission_rules WHERE active=1'))
+  const rules = (await Q('SELECT * FROM commission_rules WHERE active'))
     .filter((r) => {
       switch (r.scope) {
         case 'salesperson': return r.salesperson_id === inv.rep_id;

@@ -16,7 +16,7 @@ r.get('/commission-rules', requireInternal, async (_req, res) => {
     LEFT JOIN categories c ON c.id=cr.category_id
     LEFT JOIN products p ON p.id=cr.product_id
     ORDER BY cr.id`);
-  const reps = await Q(`SELECT id, name, sales_team FROM users WHERE role='salesrep' AND active=1 ORDER BY name`);
+  const reps = await Q(`SELECT id, name, sales_team FROM users WHERE role='salesrep' AND active ORDER BY name`);
   res.json({ rules, reps });
 });
 
@@ -87,7 +87,7 @@ r.get('/commissions/rules', requireInternal, async (req, res, next) => {
       LEFT JOIN categories c ON c.id=cr.category_id
       LEFT JOIN products p ON p.id=cr.product_id
       ORDER BY cr.id`);
-    const reps = await Q(`SELECT id, name, sales_team FROM users WHERE role='salesrep' AND active=1 ORDER BY name`);
+    const reps = await Q(`SELECT id, name, sales_team FROM users WHERE role='salesrep' AND active ORDER BY name`);
     res.json({ rules, reps });
   } catch (e) { next(e); }
 });

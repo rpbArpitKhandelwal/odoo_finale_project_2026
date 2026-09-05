@@ -105,6 +105,49 @@ function recomputeTotals(quotationId) {
 const r2 = (x) => Math.round(x * 100) / 100;
 const r1 = (x) => Math.round(x * 10) / 10;
 
+/* ============ 4. UPSELL / CROSS-SELL ENGINE ============ */
+/* Rank by co-purchase score + promotion boost; only suggestions whose own margin clears the configured floor. */
+function upsellSuggestions(quotationId) {
+  const q = db.prepare('SELECT * FROM quotations WHERE id=?').get(quotationId);
+  const customer = db.prepare('SELECT * FROM customers WHERE id=?').get(q.customer_id);
+  const lines = db.prepare('SELECT * FROM quotation_lines WHERE quotation_id=?').all(quotationId);
+  const inCart = new Set(lines.map(l => l.product_id));
+  const minMargin = parseFloat(getSetting('min_margin_pct', 30));
+  const scores = new Map(); // product_id -> best score
+  for (const l of lines) {
+    const rules = db.prepare(`SELECT u.*, p.promoted FROM upsell_rules u JOIN products p ON p.id=u.suggested_product_id
+      WHERE u.trigger_product_id=? AND u.active=1 AND p.active=1`).all(l.product_id);
+    for (const r of rules) {
+      if (inCart.has(r.suggested_product_id)) continue;
+      const score = r.co_score + (r.promoted ? 0.15 : 0);
+      const prev = scores.get(r.suggested_product_id) || 0;
+      if (score > prev) scores.set(r.suggested_product_id, score);
+    }
+  }
+  const out = [];
+  for (const [pid, score] of scores) {
+    const p = db.prepare('SELECT p.*, c.name category_name FROM products p JOIN categories c ON c.id=p.category_id WHERE p.id=?').get(pid);
+    if (!p) continue;
+    const price = unitPriceFor(pid, null, customer);
+    const marginPct = price > 0 ? (price - p.cost_price) / price * 100 : 0;
+    if (marginPct < minMargin) continue; // unhealthy-margin suggestions never surface
+    // margin delta if added at qty 1
+    const revenue = price, margin$ = price - p.cost_price;
+    const cur = db.prepare('SELECT total, cost_total FROM quotations WHERE id=?').get(quotationId);
+    const newMargin = (cur.total - cur.cost_total + margin$);
+    const newTotal = cur.total + revenue;
+    out.push({
+      product_id: pid, name: p.name, sku: p.sku, category: p.category_name, price,
+      promoted: !!p.promoted, score: Math.round(score * 100) / 100,
+      margin_pct: Math.round(marginPct), margin_delta: r2(margin$),
+      order_margin_after: newTotal > 0 ? Math.round(newMargin / newTotal * 1000) / 10 : 0,
+      product_type: p.product_type,
+    });
+  }
+  out.sort((a, b) => b.score - a.score);
+  return out.slice(0, 6);
+}
+
 module.exports = {
-  tierPriceRule, unitPriceFor, allowedDiscountFor, effectiveDiscount, computeRisk, requiredApprovalLevel, recomputeTotals, r1, r2,
+  tierPriceRule, unitPriceFor, allowedDiscountFor, effectiveDiscount, computeRisk, requiredApprovalLevel, recomputeTotals, upsellSuggestions, r1, r2,
 };

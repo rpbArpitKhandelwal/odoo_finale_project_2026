@@ -168,7 +168,7 @@ r.post('/quotations/:id/lines/:lineId/subscription', requireInternal, (req, res)
     db.prepare(`UPDATE billing_schedule SET amount=? WHERE line_id=? AND status='scheduled'`).run(E.r2(newQty * price), line.id);
     if (pr && pr.delta !== 0) {
       const kind = pr.delta > 0 ? 'recurring' : 'credit_note';
-      const inv = db.prepare(`INSERT INTO invoices(number,quotation_id,customer_id,kind,amount,status,due_date) VALUES(?,?,?,?,?,?,date("now"))`)
+      const inv = db.prepare(`INSERT INTO invoices(number,quotation_id,customer_id,kind,amount,status,due_date) VALUES(?,?,?,?,?,?,date('now'))`)
         .run(E.nextInvoiceNumber(), q.id, q.customer_id, kind, Math.abs(pr.delta), 'open');
       E.audit('quotation', q.id, req.user, 'subscription_modified',
         `${line.description}: qty ${line.qty}→${newQty}, daily proration (${pr.days_remaining}/${pr.days_in_cycle} days) → ${kind === 'credit_note' ? 'credit note' : 'charge'} ${Math.abs(pr.delta)} (INV row ${Number(inv.lastInsertRowid)})`);
@@ -181,7 +181,7 @@ r.post('/quotations/:id/lines/:lineId/subscription', requireInternal, (req, res)
     const cr = E.cancelSubscriptionCredit(line);
     db.prepare(`UPDATE billing_schedule SET status='cancelled' WHERE line_id=? AND status='scheduled'`).run(line.id);
     if (cr.refund > 0) {
-      db.prepare(`INSERT INTO invoices(number,quotation_id,customer_id,kind,amount,status,due_date) VALUES(?,?,?,?,?,?,date("now"))`)
+      db.prepare(`INSERT INTO invoices(number,quotation_id,customer_id,kind,amount,status,due_date) VALUES(?,?,?,?,?,?,date('now'))`)
         .run(E.nextInvoiceNumber(), q.id, q.customer_id, 'credit_note', cr.refund, 'open');
     }
     E.audit('quotation', q.id, req.user, 'subscription_cancelled',

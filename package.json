@@ -8,5 +8,8 @@
     "start": "node server.js",
     "reset": "node -e \"require('fs').rmSync('data',{recursive:true,force:true}); console.log('database reset — restart to reseed')\""
   },
-  "engines": { "node": ">=22.5" }
+  "engines": { "node": ">=22.5" },
+  "dependencies": {
+    "express": "^5.2.1"
+  }
 }

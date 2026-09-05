@@ -173,7 +173,7 @@ async function invoicePDF(invoiceId) {
   const meta = [
     `Customer: ${inv.customer_name} (${inv.customer_tier} partner)`,
     `Quotation: ${inv.quote_number}   Type: ${inv.kind.replace(/_/g, ' ')}   Status: ${inv.status.toUpperCase()}`,
-    `Issued: ${String(inv.created_at || '').slice(0, 10)}   Due: ${inv.due_date || '—'}${inv.paid_at ? `   Paid: ${String(inv.paid_at).slice(0, 10)}` : ''}`,
+    `Issued: ${String(inv.created_at || '').slice(0, 10)}   Due: ${String(inv.due_date || '').slice(0, 10) || '-'}${inv.paid_at ? `   Paid: ${String(inv.paid_at).slice(0, 10)}` : ''}`,
     inv.kind === 'recurring' ? 'Covers the current recurring cycle for subscription lines on this order.' : inv.kind === 'credit_note' ? 'Credit note issued per the subscription cancellation policy.' : 'Covers all one-time products and services on this order.',
   ];
   const foot = ['', '', '', 'TOTAL DUE', `${cur} ${Number(inv.amount).toFixed(2)}`];

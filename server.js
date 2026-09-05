@@ -9,7 +9,6 @@ const app = express();
 const PORT = process.env.PORT || 4300;
 
 const CLIENT_DIST = path.join(__dirname, 'client', 'dist');
-const LEGACY_PUBLIC = path.join(__dirname, 'public');
 
 app.use(express.json({ limit: '2mb' }));
 app.use((req, res, next) => { // tiny request log
@@ -26,18 +25,30 @@ db.init().then(() => {
   app.use('/api', require('./src/routes/dash'));
   app.use('/api', require('./src/routes/commissions'));
 
-  /* serve the React client when built; legacy vanilla UI stays reachable as a fallback */
+  /* serve the React client; if it hasn't been built yet, show a helpful page (API stays live for tests) */
   if (fs.existsSync(CLIENT_DIST)) {
     app.use(express.static(CLIENT_DIST));
     app.use((req, res, next) => {
-      if (req.path.startsWith('/legacy')) return next();
+      if (req.path.startsWith('/api')) return next();
       res.sendFile(path.join(CLIENT_DIST, 'index.html'));
     });
+  } else {
+    app.use((req, res, next) => {
+      if (req.path.startsWith('/api')) return next();
+      res.type('html').send(`<!doctype html><meta charset="utf-8"><title>DealFlow360</title>
+        <body style="font-family:system-ui;background:#F4F4F6;display:grid;place-items:center;height:100vh;margin:0">
+          <div style="background:#fff;border-radius:12px;padding:34px 42px;max-width:520px;box-shadow:0 8px 30px rgba(0,0,0,.12)">
+            <div style="font-size:38px">🏗️</div>
+            <h1 style="margin:8px 0;color:#4E2E5E">DealFlow360 — client not built yet</h1>
+            <p style="color:#555;line-height:1.6">The API and database are running. Build the React client with:
+            <pre style="background:#F0EDF2;padding:10px 14px;border-radius:8px">npm run client:build</pre>
+            then restart the server (or just run <b>start.bat</b>, which does everything).</p>
+          </div>
+        </body>`);
+    });
   }
-  app.use('/legacy', express.static(LEGACY_PUBLIC));
 
   app.use('/api', (req, res) => res.status(404).json({ error: `No route: ${req.method} ${req.path}` }));
-  app.use((req, res) => res.status(404).send('Not found'));
 
   app.use((err, req, res, _next) => {
     console.error('ERROR', err);
@@ -54,4 +65,14 @@ db.init().then(() => {
 }).catch((e) => {
   console.error('Failed to initialise database:', e.message);
   process.exit(1);
+});
+
+process.on('uncaughtException', (err) => {
+  console.error('UNCAUGHT EXCEPTION:', err);
+});
+process.on('unhandledRejection', (reason, p) => {
+  console.error('UNHANDLED REJECTION at:', p, 'reason:', reason);
+});
+process.on('exit', (code) => {
+  console.log('PROCESS EXIT EVENT WITH CODE:', code);
 });

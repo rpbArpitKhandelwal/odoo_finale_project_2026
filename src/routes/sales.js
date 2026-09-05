@@ -13,8 +13,7 @@ async function nextQuoteNumber() {
   const row = await ONE(`SELECT number FROM quotations WHERE number LIKE 'QT-%' ORDER BY CAST(substr(number,4) AS INTEGER) DESC LIMIT 1`);
   return `QT-${row ? parseInt(row.number.slice(3), 10) + 1 : 1001}`;
 }
-async function quoteDetail(id) {
-  const q = await ONE(`SELECT q.*, c.name customer_name, c.tier customer_tier, c.currency customer_currency,
+async function quoteDetail(id) {  const q = await ONE(`SELECT q.*, c.name customer_name, c.tier customer_tier, c.currency customer_currency,
     u.name rep_name, u.sales_team rep_team FROM quotations q JOIN customers c ON c.id=q.customer_id JOIN users u ON u.id=q.rep_id WHERE q.id=?`, [id]);
   if (!q) return null;
   q.lines = await Q(`SELECT l.*, p.product_type, p.tax_rate, p.category_id, c.name category_name, c.discount_ceiling
@@ -42,6 +41,12 @@ async function quoteDetail(id) {
   q.commissions = await Q(`SELECT cm.*, u.name salesperson_name FROM commissions cm JOIN users u ON u.id=cm.salesperson_id WHERE cm.quotation_id=? ORDER BY cm.id`, [id]);
   q.portal_url = `/portal/q/${q.number}?k=${q.portal_token}`;
   return q;
+}
+
+/* RBAC: only the owning rep (or manager/admin) may modify a quotation */
+function assertQuoteEdit(req, q) {
+  if (q.rep_id === req.user.id || ['manager', 'admin'].includes(req.user.role)) return true;
+  return false;
 }
 
 /* ---- list (workspace + pipeline) ---- */
@@ -81,6 +86,7 @@ r.post('/quotations/:id/lines', requireInternal, async (req, res) => {
   const q = await ONE('SELECT * FROM quotations WHERE id=?', [Number(req.params.id)]);
   if (!q) return res.status(404).json({ error: 'Quotation not found' });
   if (!['draft', 'returned', 'negotiating', 'sent'].includes(q.status)) return res.status(400).json({ error: `Lines are locked while status is ${q.status}` });
+  if (!assertQuoteEdit(req, q)) return res.status(403).json({ error: 'Only the owning salesperson or a manager can modify this quotation' });
   const { product_id, variant_id, qty, discount_pct, plan_id } = req.body || {};
   const product = await ONE('SELECT * FROM products WHERE id=? AND active=1', [product_id]);
   if (!product) return res.status(400).json({ error: 'Product not found' });
@@ -110,6 +116,7 @@ r.put('/quotations/:id/lines/:lineId', requireInternal, async (req, res) => {
   const q = await ONE('SELECT * FROM quotations WHERE id=?', [Number(req.params.id)]);
   if (!q) return res.status(404).json({ error: 'Quotation not found' });
   if (!['draft', 'returned', 'negotiating', 'sent'].includes(q.status)) return res.status(400).json({ error: `Lines are locked while status is ${q.status}` });
+  if (!assertQuoteEdit(req, q)) return res.status(403).json({ error: 'Only the owning salesperson or a manager can modify this quotation' });
   const { qty, discount_pct, unit_price } = req.body || {};
   await RUN('UPDATE quotation_lines SET qty=COALESCE(?,qty), discount_pct=COALESCE(?,discount_pct), unit_price=COALESCE(?,unit_price) WHERE id=? AND quotation_id=?',
     [qty, discount_pct, unit_price, req.params.lineId, q.id]);
@@ -122,6 +129,7 @@ r.delete('/quotations/:id/lines/:lineId', requireInternal, async (req, res) => {
   const q = await ONE('SELECT * FROM quotations WHERE id=?', [Number(req.params.id)]);
   if (!q) return res.status(404).json({ error: 'Quotation not found' });
   if (!['draft', 'returned', 'negotiating', 'sent'].includes(q.status)) return res.status(400).json({ error: `Lines are locked while status is ${q.status}` });
+  if (!assertQuoteEdit(req, q)) return res.status(403).json({ error: 'Only the owning salesperson or a manager can modify this quotation' });
   const l = await ONE('SELECT description FROM quotation_lines WHERE id=?', [req.params.lineId]);
   await RUN('DELETE FROM quotation_lines WHERE id=? AND quotation_id=?', [req.params.lineId, q.id]);
   if (l) await E.audit('quotation', q.id, req.user, 'line_removed', `− ${l.description}`);
@@ -132,6 +140,7 @@ r.delete('/quotations/:id/lines/:lineId', requireInternal, async (req, res) => {
 r.put('/quotations/:id/order-discount', requireInternal, async (req, res) => {
   const q = await ONE('SELECT * FROM quotations WHERE id=?', [Number(req.params.id)]);
   if (!q) return res.status(404).json({ error: 'Quotation not found' });
+  if (!assertQuoteEdit(req, q)) return res.status(403).json({ error: 'Only the owning salesperson or a manager can modify this quotation' });
   const pct = Math.max(0, Math.min(Number(req.body?.order_discount_pct || 0), 90));
   await RUN('UPDATE quotations SET order_discount_pct=? WHERE id=?', [pct, q.id]);
   await E.audit('quotation', q.id, req.user, 'order_discount', `order-level discount ${pct}%`);
@@ -147,6 +156,7 @@ r.post('/quotations/:id/upsell/:productId/add', requireInternal, async (req, res
   const q = await ONE('SELECT * FROM quotations WHERE id=?', [Number(req.params.id)]);
   if (!q) return res.status(404).json({ error: 'Quotation not found' });
   if (!['draft', 'returned', 'negotiating', 'sent'].includes(q.status)) return res.status(400).json({ error: 'Quotation is locked' });
+  if (!assertQuoteEdit(req, q)) return res.status(403).json({ error: 'Only the owning salesperson or a manager can modify this quotation' });
   const customer = await ONE('SELECT * FROM customers WHERE id=?', [q.customer_id]);
   const product = await ONE('SELECT * FROM products WHERE id=?', [Number(req.params.productId)]);
   if (!product) return res.status(404).json({ error: 'Product not found' });
@@ -171,6 +181,7 @@ r.post('/quotations/:id/upsell/:productId/add', requireInternal, async (req, res
 r.post('/quotations/:id/upsell/:productId/dismiss', requireInternal, async (req, res) => {
   const q = await ONE('SELECT * FROM quotations WHERE id=?', [Number(req.params.id)]);
   if (!q) return res.status(404).json({ error: 'Quotation not found' });
+  if (!assertQuoteEdit(req, q)) return res.status(403).json({ error: 'Only the owning salesperson or a manager can modify this quotation' });
   const pid = Number(req.params.productId);
   const cur = new Set(String(q.dismissed_suggestions || '').split(',').filter(Boolean).map(Number));
   if (req.body?.undo) cur.delete(pid); else cur.add(pid);
@@ -185,6 +196,7 @@ r.post('/quotations/:id/upsell/:productId/dismiss', requireInternal, async (req,
 r.post('/quotations/:id/submit', requireInternal, async (req, res) => {
   const q = await ONE('SELECT * FROM quotations WHERE id=?', [Number(req.params.id)]);
   if (!q) return res.status(404).json({ error: 'Quotation not found' });
+  if (!assertQuoteEdit(req, q)) return res.status(403).json({ error: 'Only the owning salesperson or a manager can submit this quotation' });
   if (!['draft', 'returned'].includes(q.status)) return res.status(400).json({ error: `Cannot submit from status ${q.status}` });
   const lines = await ONE('SELECT COUNT(*) c FROM quotation_lines WHERE quotation_id=?', [q.id]);
   if (!lines.c) return res.status(400).json({ error: 'Add at least one product line first' });
@@ -249,6 +261,7 @@ r.post('/quotations/:id/approve', requireInternal, async (req, res) => {
 r.post('/quotations/:id/send', requireInternal, async (req, res) => {
   const q = await ONE('SELECT * FROM quotations WHERE id=?', [Number(req.params.id)]);
   if (!q) return res.status(404).json({ error: 'Quotation not found' });
+  if (!assertQuoteEdit(req, q)) return res.status(403).json({ error: 'Only the owning salesperson or a manager can send this quotation' });
   if (!['approved', 'confirmed', 'fulfilling', 'fulfilled'].includes(q.status)) return res.status(400).json({ error: 'Send the quotation to the customer once it is approved' });
   await RUN(`UPDATE quotations SET status='sent', sent_at=COALESCE(sent_at, ${NOW_ISO}), last_activity_at=${NOW_ISO} WHERE id=?`, [q.id]);
   await E.audit('quotation', q.id, req.user, 'sent_to_customer', `Portal link issued: /portal/q/${q.number}`);
@@ -261,6 +274,7 @@ r.post('/quotations/:id/send', requireInternal, async (req, res) => {
 r.post('/quotations/:id/negotiation/:nid', requireInternal, async (req, res) => {
   const q = await ONE('SELECT * FROM quotations WHERE id=?', [Number(req.params.id)]);
   if (!q) return res.status(404).json({ error: 'Quotation not found' });
+  if (!assertQuoteEdit(req, q)) return res.status(403).json({ error: 'Only the owning salesperson or a manager can respond to negotiations' });
   const n = await ONE('SELECT * FROM negotiations WHERE id=? AND quotation_id=?', [Number(req.params.nid), q.id]);
   if (!n || n.status !== 'open') return res.status(400).json({ error: 'Request already resolved' });
   const action = req.body?.action; // accept | decline

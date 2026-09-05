@@ -148,7 +148,142 @@ CREATE TABLE IF NOT EXISTS upsell_rules (
   active INTEGER DEFAULT 1,
   UNIQUE(trigger_product_id, suggested_product_id)
 );
+CREATE TABLE IF NOT EXISTS quotations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  number TEXT NOT NULL UNIQUE,
+  customer_id INTEGER NOT NULL,
+  rep_id INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'draft',
+  currency TEXT NOT NULL DEFAULT 'USD',
+  exchange_rate REAL NOT NULL DEFAULT 1,
+  order_discount_pct REAL NOT NULL DEFAULT 0,
+  subtotal REAL DEFAULT 0, discount_total REAL DEFAULT 0, tax_total REAL DEFAULT 0,
+  total REAL DEFAULT 0, cost_total REAL DEFAULT 0, margin_pct REAL DEFAULT 0,
+  risk_score REAL DEFAULT 0, max_violation REAL DEFAULT 0,
+  approval_level TEXT DEFAULT 'none',
+  valid_until TEXT, expected_delivery TEXT,
+  portal_token TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  last_activity_at TEXT DEFAULT (datetime('now')),
+  submitted_at TEXT, sent_at TEXT, confirmed_at TEXT,
+  notes TEXT DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS quotation_lines (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  quotation_id INTEGER NOT NULL,
+  product_id INTEGER NOT NULL,
+  variant_id INTEGER,
+  description TEXT NOT NULL,
+  qty REAL NOT NULL DEFAULT 1,
+  unit_price REAL NOT NULL,
+  cost_price REAL NOT NULL DEFAULT 0,
+  discount_pct REAL NOT NULL DEFAULT 0,
+  line_type TEXT NOT NULL DEFAULT 'one_time',
+  plan_id INTEGER,
+  billing_period TEXT,
+  sort INTEGER DEFAULT 0,
+  dismissed INTEGER DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS approvals (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  quotation_id INTEGER NOT NULL,
+  level TEXT NOT NULL,
+  sequence INTEGER NOT NULL DEFAULT 1,
+  status TEXT NOT NULL DEFAULT 'waiting',
+  approver_id INTEGER,
+  reason TEXT,
+  decided_at TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS audit_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  entity TEXT NOT NULL,
+  entity_id INTEGER NOT NULL,
+  user_id INTEGER,
+  user_name TEXT,
+  action TEXT NOT NULL,
+  details TEXT DEFAULT '',
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS fulfillment_splits (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  quotation_id INTEGER NOT NULL,
+  line_id INTEGER NOT NULL,
+  warehouse_id INTEGER NOT NULL,
+  qty REAL NOT NULL,
+  status TEXT NOT NULL DEFAULT 'planned' CHECK(status IN ('planned','shipped','backorder')),
+  est_cost REAL DEFAULT 0,
+  created_at TEXT DEFAULT (datetime('now')),
+  shipped_at TEXT
+);
+CREATE TABLE IF NOT EXISTS billing_schedule (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  quotation_id INTEGER NOT NULL,
+  line_id INTEGER NOT NULL,
+  scheduled_date TEXT NOT NULL,
+  description TEXT,
+  amount REAL NOT NULL,
+  status TEXT NOT NULL DEFAULT 'scheduled' CHECK(status IN ('scheduled','invoiced','cancelled')),
+  invoice_id INTEGER,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS invoices (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  number TEXT NOT NULL UNIQUE,
+  quotation_id INTEGER NOT NULL,
+  customer_id INTEGER NOT NULL,
+  kind TEXT NOT NULL CHECK(kind IN ('one_time','recurring','credit_note')),
+  amount REAL NOT NULL,
+  status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','paid','void')),
+  due_date TEXT,
+  paid_at TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS payments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  invoice_id INTEGER NOT NULL,
+  amount REAL NOT NULL,
+  method TEXT DEFAULT 'bank_transfer',
+  reference TEXT DEFAULT '',
+  paid_at TEXT DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS negotiations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  quotation_id INTEGER NOT NULL,
+  line_id INTEGER,
+  user_id INTEGER,
+  user_name TEXT,
+  kind TEXT NOT NULL CHECK(kind IN ('comment','counter','change_request')),
+  message TEXT DEFAULT '',
+  proposed_discount REAL,
+  status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','accepted','declined')),
+  created_at TEXT DEFAULT (datetime('now')),
+  resolved_at TEXT
+);
+CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY,
+  value TEXT
+);
+CREATE TABLE IF NOT EXISTS alerts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind TEXT NOT NULL CHECK(kind IN ('stalled','anomaly','slippage')),
+  quotation_id INTEGER NOT NULL,
+  message TEXT NOT NULL,
+  severity TEXT DEFAULT 'medium',
+  status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','nudged','escalated','dismissed')),
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(kind, quotation_id)
+);
 `;
+
+function getSetting(key, dflt) {
+  const row = db.prepare('SELECT value FROM settings WHERE key=?').get(key);
+  return row ? row.value : dflt;
+}
+function setSetting(key, value) {
+  db.prepare('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key, String(value));
+}
 
 
 db.exec(SCHEMA);

@@ -21,7 +21,7 @@ r.post('/quotations/:id/split/accept', requireInternal, (req, res) => {
   if (!q) return res.status(404).json({ error: 'Quotation not found' });
   if (q.status !== 'approved') return res.status(400).json({ error: 'Accept the suggested split while the order is approved' });
   const s = E.suggestSplit(q.id);
-  db.prepare(`DELETE FROM fulfillment_splits WHERE quotation_id=? AND status IN ("planned")`).run(q.id);
+  db.prepare(`DELETE FROM fulfillment_splits WHERE quotation_id=? AND status='planned'`).run(q.id);
   for (const l of s.lines) {
     db.prepare(`INSERT INTO fulfillment_splits(quotation_id,line_id,warehouse_id,qty,status,est_cost) VALUES(?,?,?,?,?,?)`)
       .run(q.id, l.line_id, l.warehouse_id, l.qty, l.status, l.status === 'planned' ? s.est_cost / Math.max(1, s.shipment_count) : 0);

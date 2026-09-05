@@ -40,38 +40,48 @@ function buildPDF(title, headers, rows, footer, meta) {
   const PAGE_W = 842, PAGE_H = 595; // A4 landscape
   const M = 36;
   const colW = (PAGE_W - 2 * M) / headers.length;
-  const pdfEsc = (s) => String(s ?? '').replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)').replace(/[^\x20-\x7E]/g, '');
+  /* built-in Helvetica is WinAnsi-only: transliterate what we use, drop the rest */
+  const pdfEsc = (s) => String(s ?? '')
+    .replace(/₹/g, 'Rs.').replace(/→/g, '->').replace(/[–—]/g, '-').replace(/·/g, '-').replace(/[’‘]/g, "'").replace(/[“”]/g, '"')
+    .replace(/[^\x20-\x7E]/g, '')
+    .replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)');
   let y = 0; const content = [];
+  /* text: gray 0 = black (default), 1 = white — callers opt into light text with gray/white */
   const text = (x, yy, size, str, opts = {}) => {
-    content.push({ t: 'Tj', x, y: yy, size, str: pdfEsc(str), gray: opts.gray || 0, bold: opts.bold, white: opts.white });
+    let out = pdfEsc(str);
+    if (opts.maxW) {
+      const maxChars = Math.max(4, Math.floor(opts.maxW / (size * 0.5))); // ~0.5em average glyph
+      if (out.length > maxChars) out = `${out.slice(0, Math.max(3, maxChars - 3))}...`;
+    }
+    content.push({ t: 'Tj', x, y: yy, size, str: out, gray: opts.gray ?? (opts.white ? 1 : 0), bold: opts.bold });
   };
   const rect = (x, yy, w, h, gray) => content.push({ t: 're', x, y: yy, w, h, gray });
 
-  // header band
+  // header band (near-black) with white title + light subtitle
   rect(0, PAGE_H - 70, PAGE_W, 70, 0.12);
-  text(M, PAGE_H - 42, 17, title, { white: false, bold: true });
-  text(M, PAGE_H - 60, 9, `Generated ${new Date().toISOString().slice(0, 16).replace('T', ' ')} UTC · ${rows.length} records`, { gray: 0.35 });
+  text(M, PAGE_H - 42, 17, title, { white: true, bold: true, maxW: PAGE_W - 2 * M });
+  text(M, PAGE_H - 60, 9, `Generated ${new Date().toISOString().slice(0, 16).replace('T', ' ')} UTC - ${rows.length} records`, { gray: 0.72, maxW: PAGE_W - 2 * M });
   y = PAGE_H - 96;
   // optional meta block (invoice documents: customer, dates, coverage note)
   if (Array.isArray(meta)) {
     for (const line of meta) {
-      text(M, y, 9, line, { gray: 0.25 });
+      text(M, y, 9, line, { gray: 0.25, maxW: PAGE_W - 2 * M });
       y -= 13;
     }
     y -= 6;
   }
-  // table header
+  // table header (black bold on light band)
   rect(M, y - 5, PAGE_W - 2 * M, 18, 0.9);
-  headers.forEach((h, i) => text(M + 4 + i * colW, y + 7, 8, h, { bold: true }));
+  headers.forEach((h, i) => text(M + 4 + i * colW, y + 7, 8, h, { bold: true, maxW: colW - 6 }));
   y -= 18;
   for (const r of rows) {
     if (y < 50) break; // single-page report (hackathon scale)
-    r.forEach((c, i) => text(M + 4 + i * colW, y + 4, 8, c));
+    r.forEach((c, i) => text(M + 4 + i * colW, y + 4, 8, c, { maxW: colW - 6 }));
     y -= 15;
   }
   if (footer) {
     y -= 4; rect(M, y - 2, PAGE_W - 2 * M, 16, 0.85);
-    footer.forEach((c, i) => text(M + 4 + i * colW, y + 8, 8, c, { bold: true }));
+    footer.forEach((c, i) => text(M + 4 + i * colW, y + 8, 8, c, { bold: true, maxW: colW - 6 }));
   }
 
   // ---- assemble PDF objects ----
@@ -84,8 +94,7 @@ function buildPDF(title, headers, rows, footer, meta) {
     if (c.t === 're') s += `q ${c.gray} g ${c.x} ${PAGE_H - c.y - c.h} ${c.w} ${c.h} re f Q\n`;
     else {
       const font = c.bold ? '/F2' : '/F1';
-      const g = c.white ? 1 : (1 - c.gray);
-      s += `BT ${font} ${c.size} Tf ${g.toFixed(2)} g 1 0 0 1 ${c.x} ${PAGE_H - c.y} Tm (${c.str}) Tj ET\n`;
+      s += `BT ${font} ${c.size} Tf ${c.gray.toFixed(2)} g 1 0 0 1 ${c.x} ${PAGE_H - c.y} Tm (${c.str}) Tj ET\n`;
     }
   }
   objs.push(`<< /Length ${Buffer.byteLength(s)} >>\nstream\n${s}\nendstream`);

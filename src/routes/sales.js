@@ -164,5 +164,121 @@ r.post('/quotations/:id/upsell/:productId/add', requireInternal, (req, res) => {
   res.json({ quotation: fresh });
 });
 
+/* ---- submit → auto risk routing ---- */
+r.post('/quotations/:id/submit', requireInternal, (req, res) => {
+  const q = db.prepare('SELECT * FROM quotations WHERE id=?').get(Number(req.params.id));
+  if (!q) return res.status(404).json({ error: 'Quotation not found' });
+  if (!['draft', 'returned'].includes(q.status)) return res.status(400).json({ error: `Cannot submit from status ${q.status}` });
+  const lines = db.prepare('SELECT COUNT(*) c FROM quotation_lines WHERE quotation_id=?').get(q.id).c;
+  if (!lines) return res.status(400).json({ error: 'Add at least one product line first' });
+  E.recomputeTotals(q.id);
+  const fresh = db.prepare('SELECT * FROM quotations WHERE id=?').get(q.id);
+  const { level, risk } = E.requiredApprovalLevel(fresh);
+  const up = { submitted_at: new Date().toISOString() };
+  if (level === 'none') {
+    db.prepare(`UPDATE quotations SET status='approved', approval_level='none', submitted_at=?, last_activity_at=datetime('now') WHERE id=?`).run(up.submitted_at, q.id);
+    E.audit('quotation', q.id, req.user, 'auto_approved', `No approval needed (blended risk ${risk.risk_score}) — ready for fulfillment`);
+  } else {
+    const status = level === 'manager' ? 'pending_manager' : 'pending_finance';
+    db.prepare(`UPDATE quotations SET status=?, approval_level=?, submitted_at=?, last_activity_at=datetime('now') WHERE id=?`).run(status, level, up.submitted_at, q.id);
+    db.prepare('DELETE FROM approvals WHERE quotation_id=?').run(q.id);
+    if (level === 'finance') db.prepare(`INSERT INTO approvals(quotation_id,level,sequence,status) VALUES(?,?,1,'pending')`).run(q.id, 'manager');
+    db.prepare(`INSERT INTO approvals(quotation_id,level,sequence,status) VALUES(?,?,?,'pending')`).run(q.id, level, level === 'finance' ? 2 : 1);
+    E.audit('quotation', q.id, req.user, 'submitted_for_approval',
+      `Auto-routed to ${level === 'finance' ? 'Manager → Finance' : 'Sales Manager'} — blended risk ${risk.risk_score}, worst line ${risk.max_violation} pts over ceiling`);
+  }
+  res.json({ quotation: quoteDetail(q.id) });
+});
+
+/* ---- approve / reject / return ---- */
+r.post('/quotations/:id/approve', requireInternal, (req, res) => {
+  const q = db.prepare('SELECT * FROM quotations WHERE id=?').get(Number(req.params.id));
+  if (!q) return res.status(404).json({ error: 'Quotation not found' });
+  const action = req.body?.action; // approve | reject | return
+  const reason = req.body?.reason || '';
+  if (!['approve', 'reject', 'return'].includes(action)) return res.status(400).json({ error: 'Invalid action' });
+  const pending = db.prepare(`SELECT * FROM approvals WHERE quotation_id=? AND status='pending' ORDER BY sequence LIMIT 1`).get(q.id);
+  const expectedStatus = pending ? (pending.level === 'manager' ? 'pending_manager' : 'pending_finance') : null;
+  if (!pending || q.status !== expectedStatus) return res.status(400).json({ error: 'No approval step currently waiting for you' });
+  const roleOk = (pending.level === 'manager' && ['manager', 'admin'].includes(req.user.role)) ||
+    (pending.level === 'finance' && ['finance', 'admin'].includes(req.user.role));
+  if (!roleOk) return res.status(403).json({ error: `This step must be actioned by ${pending.level === 'manager' ? 'a Sales Manager' : 'Finance'}` });
+
+  const now = new Date().toISOString();
+  if (action === 'approve') {
+    db.prepare(`UPDATE approvals SET status='approved', approver_id=?, reason=?, decided_at=? WHERE id=?`).run(req.user.id, reason, now, pending.id);
+    const next = db.prepare(`SELECT * FROM approvals WHERE quotation_id=? AND status='waiting' ORDER BY sequence LIMIT 1`).get(q.id);
+    if (next) {
+      db.prepare(`UPDATE approvals SET status='pending' WHERE id=?`).run(next.id);
+      db.prepare(`UPDATE quotations SET status=?, last_activity_at=datetime('now') WHERE id=?`).run(next.level === 'manager' ? 'pending_manager' : 'pending_finance', q.id);
+      E.audit('quotation', q.id, req.user, 'approved', `${pending.level} approved${reason ? ` — "${reason}"` : ''}; escalated to ${next.level}`);
+    } else {
+      db.prepare(`UPDATE quotations SET status='approved', last_activity_at=datetime('now') WHERE id=?`).run(q.id);
+      E.audit('quotation', q.id, req.user, 'approved', `Fully approved (${pending.level})${reason ? ` — "${reason}"` : ''}`);
+    }
+  } else if (action === 'reject') {
+    db.prepare(`UPDATE approvals SET status='rejected', approver_id=?, reason=?, decided_at=? WHERE id=?`).run(req.user.id, reason, now, pending.id);
+    db.prepare(`UPDATE approvals SET status='skipped' WHERE quotation_id=? AND status IN ('waiting','pending') AND id!=?`).run(q.id, pending.id);
+    db.prepare(`UPDATE quotations SET status='rejected', last_activity_at=datetime('now') WHERE id=?`).run(q.id);
+    E.audit('quotation', q.id, req.user, 'rejected', `${pending.level} rejected — "${reason}"`);
+  } else {
+    db.prepare(`UPDATE approvals SET status='returned', approver_id=?, reason=?, decided_at=? WHERE id=?`).run(req.user.id, reason, now, pending.id);
+    db.prepare(`UPDATE approvals SET status='skipped' WHERE quotation_id=? AND status IN ('waiting','pending') AND id!=?`).run(q.id, pending.id);
+    db.prepare(`UPDATE quotations SET status='returned', last_activity_at=datetime('now') WHERE id=?`).run(q.id);
+    E.audit('quotation', q.id, req.user, 'returned', `${pending.level} returned for revision — "${reason}"`);
+  }
+  res.json({ quotation: quoteDetail(q.id) });
+});
+
+/* ---- send to customer (portal) ---- */
+r.post('/quotations/:id/send', requireInternal, (req, res) => {
+  const q = db.prepare('SELECT * FROM quotations WHERE id=?').get(Number(req.params.id));
+  if (!q) return res.status(404).json({ error: 'Quotation not found' });
+  if (!['approved', 'sent', 'negotiating'].includes(q.status)) return res.status(400).json({ error: 'Only approved quotations can be sent to the customer' });
+  db.prepare(`UPDATE quotations SET status='sent', sent_at=COALESCE(sent_at, datetime('now')), last_activity_at=datetime('now') WHERE id=?`).run(q.id);
+  E.audit('quotation', q.id, req.user, 'sent_to_customer', `Portal link issued: /portal/q/${q.number}`);
+  const d = quoteDetail(q.id);
+  d.portal_link = `http://localhost:${process.env.PORT || 4300}/#${d.portal_url}`;
+  res.json({ quotation: d });
+});
+
+/* ---- rep handles customer negotiation requests ---- */
+r.post('/quotations/:id/negotiation/:nid', requireInternal, (req, res) => {
+  const q = db.prepare('SELECT * FROM quotations WHERE id=?').get(Number(req.params.id));
+  if (!q) return res.status(404).json({ error: 'Quotation not found' });
+  const n = db.prepare('SELECT * FROM negotiations WHERE id=? AND quotation_id=?').get(Number(req.params.nid), q.id);
+  if (!n || n.status !== 'open') return res.status(400).json({ error: 'Request already resolved' });
+  const action = req.body?.action; // accept | decline
+  const now = new Date().toISOString();
+  if (action === 'accept') {
+    if (n.kind === 'counter' && n.proposed_discount != null) {
+      // apply counter discount on every line, then recompute risk → may re-enter approval automatically
+      db.prepare('UPDATE quotation_lines SET discount_pct=? WHERE quotation_id=?').run(n.proposed_discount, q.id);
+      db.prepare(`UPDATE quotations SET order_discount_pct=0, status='negotiating', last_activity_at=datetime('now') WHERE id=?`).run(q.id);
+      E.recomputeTotals(q.id);
+      const fresh = db.prepare('SELECT * FROM quotations WHERE id=?').get(q.id);
+      const { level, risk } = E.requiredApprovalLevel(fresh);
+      db.prepare('UPDATE negotiations SET status=?, resolved_at=? WHERE id=?').run('accepted', now, n.id);
+      if (level !== 'none') {
+        const status = level === 'manager' ? 'pending_manager' : 'pending_finance';
+        db.prepare(`UPDATE quotations SET status=?, approval_level=? WHERE id=?`).run(status, level, q.id);
+        db.prepare('DELETE FROM approvals WHERE quotation_id=?').run(q.id);
+        if (level === 'finance') db.prepare(`INSERT INTO approvals(quotation_id,level,sequence,status) VALUES(?,?,1,'pending')`).run(q.id, 'manager');
+        db.prepare(`INSERT INTO approvals(quotation_id,level,sequence,status) VALUES(?,?,?,'pending')`).run(q.id, level, level === 'finance' ? 2 : 1);
+        E.audit('quotation', q.id, req.user, 're_entered_approval',
+          `Accepted counter at ${n.proposed_discount}% → blended risk ${risk.risk_score}; re-routed to ${level} automatically`);
+      } else {
+        E.audit('quotation', q.id, req.user, 'counter_accepted', `Counter at ${n.proposed_discount}% accepted (within limits)`);
+      }
+    } else {
+      db.prepare('UPDATE negotiations SET status=?, resolved_at=? WHERE id=?').run('accepted', now, n.id);
+      E.audit('quotation', q.id, req.user, 'request_accepted', `Accepted customer request: ${n.message}`);
+    }
+  } else {
+    db.prepare('UPDATE negotiations SET status=?, resolved_at=? WHERE id=?').run('declined', now, n.id);
+    E.audit('quotation', q.id, req.user, 'request_declined', `Declined customer request: ${n.message}`);
+  }
+  res.json({ quotation: quoteDetail(q.id) });
+});
 
 module.exports = r;

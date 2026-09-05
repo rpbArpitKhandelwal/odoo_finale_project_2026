@@ -225,6 +225,7 @@ CREATE TABLE IF NOT EXISTS quotations (
   approval_level TEXT DEFAULT 'none',
   valid_until TEXT, expected_delivery TEXT,
   portal_token TEXT,
+  dismissed_suggestions TEXT DEFAULT '',
   created_at TEXT DEFAULT (${NOW_ISO}),
   last_activity_at TEXT DEFAULT (${NOW_ISO}),
   submitted_at TEXT, sent_at TEXT, confirmed_at TEXT,

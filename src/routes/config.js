@@ -3,7 +3,7 @@
 const express = require('express');
 const { Q, ONE, RUN, getSetting, setSetting } = require('../db');
 const { requireRole, requireInternal } = require('../util');
-const { audit } = require('../engines');
+const { audit, unitPriceFor } = require('../engines');
 
 const r = express.Router();
 
@@ -60,6 +60,31 @@ r.post('/products/:id/variants', requireRole('admin'), async (req, res) => {
 r.delete('/variants/:id', requireRole('admin'), async (req, res) => {
   await RUN('DELETE FROM product_variants WHERE id=?', [req.params.id]);
   res.json({ ok: true });
+});
+
+/* product detail helper: tier price preview + usage + stock (drives the product form view) */
+r.get('/products/:id/price-preview', requireInternal, async (req, res) => {
+  const p = await ONE('SELECT * FROM products WHERE id=?', [Number(req.params.id)]);
+  if (!p) return res.status(404).json({ error: 'Product not found' });
+  const preview = [];
+  for (const tier of ['bronze', 'silver', 'gold']) {
+    const pls = await Q('SELECT * FROM price_lists WHERE active AND customer_tier=?', [tier]);
+    if (!pls.length) {
+      preview.push({ tier, currency: 'USD', price: await unitPriceFor(p.id, null, { tier, currency: 'USD' }), rule: null });
+    } else {
+      for (const pl of pls) {
+        preview.push({
+          tier, currency: pl.currency,
+          price: await unitPriceFor(p.id, null, { tier, currency: pl.currency }),
+          rule: `${pl.rule_type === 'discount' ? '−' : '+'}${pl.value}% · ${pl.name}`,
+        });
+      }
+    }
+  }
+  const usage = await ONE('SELECT COUNT(DISTINCT quotation_id) c FROM quotation_lines WHERE product_id=?', [p.id]);
+  const stock = await Q(`SELECT w.name warehouse, s.qty, s.reorder_point FROM stock_levels s
+    JOIN warehouses w ON w.id=s.warehouse_id WHERE s.product_id=? AND w.active ORDER BY s.qty DESC`, [p.id]);
+  res.json({ preview, times_quoted: usage.c, stock, stock_total: stock.reduce((s, x) => s + x.qty, 0) });
 });
 
 /* ---- price lists ---- */

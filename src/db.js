@@ -90,15 +90,40 @@ CREATE TABLE IF NOT EXISTS price_lists (
   value REAL NOT NULL,
   active INTEGER DEFAULT 1
 );
+CREATE TABLE IF NOT EXISTS discount_tiers (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  customer_tier TEXT NOT NULL UNIQUE,
+  max_discount_pct REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS approval_rules (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  level TEXT NOT NULL CHECK(level IN ('manager','finance')),
+  risk_min REAL NOT NULL,
+  risk_max REAL NOT NULL,
+  any_line_over REAL,
+  sequence INTEGER NOT NULL DEFAULT 1,
+  active INTEGER DEFAULT 1
+);
+CREATE TABLE IF NOT EXISTS warehouses (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  code TEXT NOT NULL UNIQUE,
+  shipping_cost_weight REAL NOT NULL DEFAULT 1.0,
+  address TEXT DEFAULT '',
+  active INTEGER DEFAULT 1
+);
+CREATE TABLE IF NOT EXISTS stock_levels (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  warehouse_id INTEGER NOT NULL,
+  product_id INTEGER NOT NULL,
+  qty INTEGER NOT NULL DEFAULT 0,
+  reorder_point INTEGER DEFAULT 0,
+  replenishment_qty INTEGER DEFAULT 0,
+  UNIQUE(warehouse_id, product_id)
+);
 `;
 
-function getSetting(key, dflt) {
-  const row = db.prepare('SELECT value FROM settings WHERE key=?').get(key);
-  return row ? row.value : dflt;
-}
-function setSetting(key, value) {
-  db.prepare('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key, String(value));
-}
 
 db.exec(SCHEMA);
 

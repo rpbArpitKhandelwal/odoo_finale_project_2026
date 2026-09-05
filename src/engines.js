@@ -81,8 +81,30 @@ function requiredApprovalLevel(quotation) {
   return { level, risk };
 }
 
+/* ============ 3. TOTALS / MARGIN ============ */
+function recomputeTotals(quotationId) {
+  const q = db.prepare('SELECT * FROM quotations WHERE id=?').get(quotationId);
+  if (!q) return null;
+  const lines = db.prepare('SELECT * FROM quotation_lines WHERE quotation_id=?').all(quotationId);
+  const od = q.order_discount_pct || 0;
+  let subtotal = 0, discountTotal = 0, taxTotal = 0, costTotal = 0;
+  for (const l of lines) {
+    const gross = l.qty * l.unit_price;
+    const eff = effectiveDiscount(l.discount_pct, od);
+    const net = gross * (1 - eff / 100);
+    subtotal += gross; discountTotal += gross - net; taxTotal += net * ((db.prepare('SELECT tax_rate FROM products WHERE id=?').get(l.product_id) || { tax_rate: 0 }).tax_rate) / 100;
+    costTotal += l.qty * l.cost_price;
+  }
+  const total = subtotal - discountTotal + taxTotal;
+  const margin = total > 0 ? (total - costTotal) / total * 100 : 0;
+  const { risk_score, max_violation } = computeRisk(q);
+  db.prepare(`UPDATE quotations SET subtotal=?, discount_total=?, tax_total=?, total=?, cost_total=?, margin_pct=?, risk_score=?, max_violation=?, last_activity_at=datetime('now') WHERE id=?`)
+    .run(r2(subtotal), r2(discountTotal), r2(taxTotal), r2(total), r2(costTotal), r1(margin), risk_score, max_violation, quotationId);
+  return db.prepare('SELECT * FROM quotations WHERE id=?').get(quotationId);
+}
 const r2 = (x) => Math.round(x * 100) / 100;
 const r1 = (x) => Math.round(x * 10) / 10;
+
 module.exports = {
-  tierPriceRule, unitPriceFor, allowedDiscountFor, effectiveDiscount, computeRisk, requiredApprovalLevel, r1, r2,
+  tierPriceRule, unitPriceFor, allowedDiscountFor, effectiveDiscount, computeRisk, requiredApprovalLevel, recomputeTotals, r1, r2,
 };

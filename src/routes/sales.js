@@ -167,6 +167,20 @@ r.post('/quotations/:id/upsell/:productId/add', requireInternal, async (req, res
   res.json({ quotation: fresh });
 });
 
+/* ---- upsell: dismiss / undo a suggestion (B5 requirement) ---- */
+r.post('/quotations/:id/upsell/:productId/dismiss', requireInternal, async (req, res) => {
+  const q = await ONE('SELECT * FROM quotations WHERE id=?', [Number(req.params.id)]);
+  if (!q) return res.status(404).json({ error: 'Quotation not found' });
+  const pid = Number(req.params.productId);
+  const cur = new Set(String(q.dismissed_suggestions || '').split(',').filter(Boolean).map(Number));
+  if (req.body?.undo) cur.delete(pid); else cur.add(pid);
+  const list = [...cur].join(',');
+  await RUN('UPDATE quotations SET dismissed_suggestions=? WHERE id=?', [list, q.id]);
+  await E.audit('quotation', q.id, req.user, req.body?.undo ? 'suggestion_restored' : 'suggestion_dismissed',
+    `${req.body?.undo ? 'restored' : 'dismissed'} upsell suggestion product ${pid}`);
+  res.json({ suggestions: await E.upsellSuggestions(q.id), dismissed: [...cur] });
+});
+
 /* ---- submit → auto risk routing ---- */
 r.post('/quotations/:id/submit', requireInternal, async (req, res) => {
   const q = await ONE('SELECT * FROM quotations WHERE id=?', [Number(req.params.id)]);

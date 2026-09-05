@@ -88,7 +88,7 @@ r.post('/quotations/:id/lines', requireInternal, async (req, res) => {
   if (!['draft', 'returned', 'negotiating', 'sent'].includes(q.status)) return res.status(400).json({ error: `Lines are locked while status is ${q.status}` });
   if (!assertQuoteEdit(req, q)) return res.status(403).json({ error: 'Only the owning salesperson or a manager can modify this quotation' });
   const { product_id, variant_id, qty, discount_pct, plan_id } = req.body || {};
-  const product = await ONE('SELECT * FROM products WHERE id=? AND active=1', [product_id]);
+  const product = await ONE('SELECT * FROM products WHERE id=? AND active', [product_id]);
   if (!product) return res.status(400).json({ error: 'Product not found' });
   const customer = await ONE('SELECT * FROM customers WHERE id=?', [q.customer_id]);
   const unit_price = await E.unitPriceFor(product_id, variant_id || null, customer);

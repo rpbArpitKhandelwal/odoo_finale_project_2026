@@ -35,4 +35,66 @@ ${footer ? row(footer, 't') : ''}
   return xml;
 }
 
-module.exports = { buildXLS, buildCSV };
+/* ---------- PDF (minimal built-from-scratch generator: Helvetica, table layout) ---------- */
+function buildPDF(title, headers, rows, footer) {
+  const PAGE_W = 842, PAGE_H = 595; // A4 landscape
+  const M = 36;
+  const colW = (PAGE_W - 2 * M) / headers.length;
+  const pdfEsc = (s) => String(s ?? '').replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)').replace(/[^\x20-\x7E]/g, '');
+  let y = 0; const content = [];
+  const text = (x, yy, size, str, opts = {}) => {
+    content.push({ t: 'Tj', x, y: yy, size, str: pdfEsc(str), gray: opts.gray || 0, bold: opts.bold, white: opts.white });
+  };
+  const rect = (x, yy, w, h, gray) => content.push({ t: 're', x, y: yy, w, h, gray });
+
+  // header band
+  rect(0, PAGE_H - 70, PAGE_W, 70, 0.12);
+  text(M, PAGE_H - 42, 17, title, { white: false, bold: true });
+  text(M, PAGE_H - 60, 9, `Generated ${new Date().toISOString().slice(0, 16).replace('T', ' ')} UTC · ${rows.length} records`, { gray: 0.35 });
+  y = PAGE_H - 96;
+  // table header
+  rect(M, y - 5, PAGE_W - 2 * M, 18, 0.9);
+  headers.forEach((h, i) => text(M + 4 + i * colW, y + 7, 8, h, { bold: true }));
+  y -= 18;
+  for (const r of rows) {
+    if (y < 50) break; // single-page report (hackathon scale)
+    r.forEach((c, i) => text(M + 4 + i * colW, y + 4, 8, c));
+    y -= 15;
+  }
+  if (footer) {
+    y -= 4; rect(M, y - 2, PAGE_W - 2 * M, 16, 0.85);
+    footer.forEach((c, i) => text(M + 4 + i * colW, y + 8, 8, c, { bold: true }));
+  }
+
+  // ---- assemble PDF objects ----
+  const objs = [];
+  objs.push(`<< /Type /Catalog /Pages 2 0 R >>`);
+  objs.push(`<< /Type /Pages /Kids [3 0 R] /Count 1 >>`);
+  objs.push(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${PAGE_W} ${PAGE_H}] /Resources << /Font << /F1 5 0 R /F2 6 0 R >> >> /Contents 4 0 R >>`);
+  let s = '';
+  for (const c of content) {
+    if (c.t === 're') s += `q ${c.gray} g ${c.x} ${PAGE_H - c.y - c.h} ${c.w} ${c.h} re f Q\n`;
+    else {
+      const font = c.bold ? '/F2' : '/F1';
+      const g = c.white ? 1 : (1 - c.gray);
+      s += `BT ${font} ${c.size} Tf ${g.toFixed(2)} g 1 0 0 1 ${c.x} ${PAGE_H - c.y} Tm (${c.str}) Tj ET\n`;
+    }
+  }
+  objs.push(`<< /Length ${Buffer.byteLength(s)} >>\nstream\n${s}\nendstream`);
+  objs.push(`<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>`);
+  objs.push(`<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>`);
+
+  let pdf = '%PDF-1.4\n';
+  const offsets = [];
+  objs.forEach((o, i) => {
+    offsets.push(Buffer.byteLength(pdf));
+    pdf += `${i + 1} 0 obj\n${o}\nendobj\n`;
+  });
+  const xrefStart = Buffer.byteLength(pdf);
+  pdf += `xref\n0 ${objs.length + 1}\n0000000000 65535 f \n`;
+  for (const off of offsets) pdf += `${String(off).padStart(10, '0')} 00000 n \n`;
+  pdf += `trailer\n<< /Size ${objs.length + 1} /Root 1 0 R >>\nstartxref\n${xrefStart}\n%%EOF`;
+  return Buffer.from(pdf, 'binary');
+}
+
+module.exports = { buildPDF, buildXLS, buildCSV };

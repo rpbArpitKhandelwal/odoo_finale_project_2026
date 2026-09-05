@@ -31,7 +31,7 @@ function portalView(q) {
     thread: db.prepare(`SELECT n.*, l.description line_label, u.name staff_name FROM negotiations n
       LEFT JOIN quotation_lines l ON l.id=n.line_id LEFT JOIN users u ON u.id=n.user_id
       WHERE n.quotation_id=? ORDER BY n.id DESC LIMIT 50`).all(q.id),
-    invoices: db.prepare(`SELECT id, number, kind, amount, status, due_date, created_at FROM invoices WHERE quotation_id=? AND status!="void" ORDER BY id`).all(q.id),
+    invoices: db.prepare(`SELECT id, number, kind, amount, status, due_date, created_at FROM invoices WHERE quotation_id=? AND status!='void' ORDER BY id`).all(q.id),
     customer: db.prepare('SELECT name, tier FROM customers WHERE id=?').get(q.customer_id),
   };
 }

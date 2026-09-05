@@ -75,5 +75,94 @@ r.get('/quotations/:id', requireInternal, (req, res) => {
   res.json({ quotation: q });
 });
 
+/* ---- lines CRUD (builder) ---- */
+r.post('/quotations/:id/lines', requireInternal, (req, res) => {
+  const q = db.prepare('SELECT * FROM quotations WHERE id=?').get(Number(req.params.id));
+  if (!q) return res.status(404).json({ error: 'Quotation not found' });
+  if (!['draft', 'returned', 'negotiating', 'sent'].includes(q.status)) return res.status(400).json({ error: `Lines are locked while status is ${q.status}` });
+  const { product_id, variant_id, qty, discount_pct, plan_id } = req.body || {};
+  const product = db.prepare('SELECT * FROM products WHERE id=? AND active=1').get(product_id);
+  if (!product) return res.status(400).json({ error: 'Product not found' });
+  const customer = db.prepare('SELECT * FROM customers WHERE id=?').get(q.customer_id);
+  const unit_price = E.unitPriceFor(product_id, variant_id || null, customer);
+  let plan = null, period = null, lineType = product.product_type;
+  if (product.product_type === 'subscription') {
+    plan = plan_id ? db.prepare('SELECT * FROM subscription_plans WHERE id=?').get(plan_id) : db.prepare('SELECT * FROM product_plans pp JOIN subscription_plans sp ON sp.id=pp.plan_id WHERE pp.product_id=?').get(product_id);
+    period = plan ? plan.billing_period : 'monthly';
+    if (!plan) return res.status(400).json({ error: 'No subscription plan attached to this product' });
+  }
+  let desc = product.name;
+  if (variant_id) { const v = db.prepare('SELECT * FROM product_variants WHERE id=?').get(variant_id); if (v) desc += ` — ${v.value}`; }
+  if (period) desc += ` (${period})`;
+  const maxSort = db.prepare('SELECT COALESCE(MAX(sort),-1) m FROM quotation_lines WHERE quotation_id=?').get(q.id).m;
+  db.prepare(`INSERT INTO quotation_lines(quotation_id,product_id,variant_id,description,qty,unit_price,cost_price,discount_pct,line_type,plan_id,billing_period,sort)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .run(q.id, product_id, variant_id || null, desc, qty || 1, unit_price, product.cost_price, discount_pct || 0, lineType, plan ? plan.id : null, period, maxSort + 1);
+  E.audit('quotation', q.id, req.user, 'line_added', `+${qty || 1} × ${desc}`);
+  const updated = E.recomputeTotals(q.id);
+  res.json({ quotation: quoteDetail(q.id) });
+});
+
+r.put('/quotations/:id/lines/:lineId', requireInternal, (req, res) => {
+  const q = db.prepare('SELECT * FROM quotations WHERE id=?').get(Number(req.params.id));
+  if (!q) return res.status(404).json({ error: 'Quotation not found' });
+  if (!['draft', 'returned', 'negotiating', 'sent'].includes(q.status)) return res.status(400).json({ error: `Lines are locked while status is ${q.status}` });
+  const { qty, discount_pct, unit_price } = req.body || {};
+  db.prepare('UPDATE quotation_lines SET qty=COALESCE(?,qty), discount_pct=COALESCE(?,discount_pct), unit_price=COALESCE(?,unit_price) WHERE id=? AND quotation_id=?')
+    .run(qty, discount_pct, unit_price, req.params.lineId, q.id);
+  E.audit('quotation', q.id, req.user, 'line_updated', `line ${req.params.lineId} → qty=${qty ?? '?'}, disc=${discount_pct ?? '?'}%`);
+  E.recomputeTotals(q.id);
+  res.json({ quotation: quoteDetail(q.id) });
+});
+
+r.delete('/quotations/:id/lines/:lineId', requireInternal, (req, res) => {
+  const q = db.prepare('SELECT * FROM quotations WHERE id=?').get(Number(req.params.id));
+  if (!q) return res.status(404).json({ error: 'Quotation not found' });
+  if (!['draft', 'returned', 'negotiating', 'sent'].includes(q.status)) return res.status(400).json({ error: `Lines are locked while status is ${q.status}` });
+  const l = db.prepare('SELECT description FROM quotation_lines WHERE id=?').get(req.params.lineId);
+  db.prepare('DELETE FROM quotation_lines WHERE id=? AND quotation_id=?').run(req.params.lineId, q.id);
+  if (l) E.audit('quotation', q.id, req.user, 'line_removed', `− ${l.description}`);
+  E.recomputeTotals(q.id);
+  res.json({ quotation: quoteDetail(q.id) });
+});
+
+r.put('/quotations/:id/order-discount', requireInternal, (req, res) => {
+  const q = db.prepare('SELECT * FROM quotations WHERE id=?').get(Number(req.params.id));
+  if (!q) return res.status(404).json({ error: 'Quotation not found' });
+  const pct = Math.max(0, Math.min(Number(req.body?.order_discount_pct || 0), 90));
+  db.prepare('UPDATE quotations SET order_discount_pct=? WHERE id=?').run(pct, q.id);
+  E.audit('quotation', q.id, req.user, 'order_discount', `order-level discount ${pct}%`);
+  E.recomputeTotals(q.id);
+  res.json({ quotation: quoteDetail(q.id) });
+});
+
+/* ---- upsell panel ---- */
+r.get('/quotations/:id/upsell', requireInternal, (req, res) => {
+  res.json({ suggestions: E.upsellSuggestions(Number(req.params.id)) });
+});
+r.post('/quotations/:id/upsell/:productId/add', requireInternal, (req, res) => {
+  const q = db.prepare('SELECT * FROM quotations WHERE id=?').get(Number(req.params.id));
+  if (!q) return res.status(404).json({ error: 'Quotation not found' });
+  if (!['draft', 'returned', 'negotiating', 'sent'].includes(q.status)) return res.status(400).json({ error: 'Quotation is locked' });
+  const customer = db.prepare('SELECT * FROM customers WHERE id=?').get(q.customer_id);
+  const product = db.prepare('SELECT * FROM products WHERE id=?').get(Number(req.params.productId));
+  if (!product) return res.status(404).json({ error: 'Product not found' });
+  let desc = product.name, plan = null, period = null;
+  if (product.product_type === 'subscription') {
+    plan = db.prepare('SELECT * FROM product_plans pp JOIN subscription_plans sp ON sp.id=pp.plan_id WHERE pp.product_id=?').get(product.id);
+    if (!plan) return res.status(400).json({ error: 'No plan attached' });
+    period = plan.billing_period; desc += ` (${period})`;
+  }
+  const unit_price = E.unitPriceFor(product.id, null, customer);
+  const maxSort = db.prepare('SELECT COALESCE(MAX(sort),-1) m FROM quotation_lines WHERE quotation_id=?').get(q.id).m;
+  db.prepare(`INSERT INTO quotation_lines(quotation_id,product_id,variant_id,description,qty,unit_price,cost_price,discount_pct,line_type,plan_id,billing_period,sort)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`).run(q.id, product.id, null, desc, 1, unit_price, product.cost_price, 0, product.product_type, plan ? plan.id : null, period, maxSort + 1);
+  E.audit('quotation', q.id, req.user, 'upsell_accepted', `accepted suggestion: ${product.name}`);
+  E.recomputeTotals(q.id);
+  const fresh = quoteDetail(q.id);
+  fresh.suggestions = E.upsellSuggestions(q.id);
+  res.json({ quotation: fresh });
+});
+
 
 module.exports = r;

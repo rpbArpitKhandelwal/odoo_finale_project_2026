@@ -1,15 +1,23 @@
 {
   "name": "dealflow360",
-  "version": "1.0.0",
-  "description": "DealFlow360 — An Intelligent, Self-Governing Sales Operations Platform",
+  "version": "2.0.0",
+  "description": "DealFlow360 — An Intelligent, Self-Governing Sales Operations Platform (React + Node.js + PostgreSQL)",
   "main": "server.js",
   "type": "commonjs",
   "scripts": {
     "start": "node server.js",
-    "reset": "node -e \"require('fs').rmSync('data',{recursive:true,force:true}); console.log('database reset — restart to reseed')\""
+    "dev": "node server.js",
+    "client": "npm run dev --prefix client",
+    "client:build": "npm run build --prefix client",
+    "build": "npm run build --prefix client",
+    "reset": "node -e \"process.env.DF_RESET=1; require('./src/db.js'); console.log('database reset — restart to reseed')\"",
+    "test": "node test-e2e.js"
   },
-  "engines": { "node": ">=22.5" },
+  "engines": {
+    "node": ">=22.5"
+  },
   "dependencies": {
-    "express": "^5.2.1"
+    "express": "^5.2.1",
+    "pg": "^8.23.0"
   }
 }

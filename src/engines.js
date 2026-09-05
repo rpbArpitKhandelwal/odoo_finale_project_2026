@@ -148,6 +148,66 @@ function upsellSuggestions(quotationId) {
   return out.slice(0, 6);
 }
 
+/* ============ 5. WAREHOUSE SPLIT ENGINE ============ */
+/*
+ * Greedy allocation that minimizes the number of shipments:
+ *  per line, prefer warehouses already used by this order (consolidation), then largest availability,
+ *  then lower shipping cost weight. Remainder becomes a backorder parked at the cheapest warehouse.
+ */
+function suggestSplit(quotationId) {
+  const lines = db.prepare(`SELECT l.*, p.stocked, p.name FROM quotation_lines l JOIN products p ON p.id=l.product_id
+    WHERE l.quotation_id=? AND p.stocked=1 AND l.line_type='one_time'`).all(quotationId);
+  const warehouses = db.prepare('SELECT * FROM warehouses WHERE active=1').all();
+  const baseShip = parseFloat(getSetting('base_ship_cost', 18));
+  const usedWH = new Set();
+  const plan = []; let shipments = 0; let estCost = 0;
+  const committed = {}; // "wh:product" -> qty already earmarked by this plan (so two lines don't double-count the same stock)
+  const availability = (wid, pid) => {
+    const row = db.prepare('SELECT qty FROM stock_levels WHERE warehouse_id=? AND product_id=?').get(wid, pid);
+    const taken = committed[`${wid}:${pid}`] || 0;
+    return (row ? row.qty : 0) - taken;
+  };
+  for (const l of lines) {
+    let remaining = l.qty;
+    const order = [...warehouses].sort((a, b) => {
+      const ua = usedWH.has(a.id) ? 1 : 0, ub = usedWH.has(b.id) ? 1 : 0;
+      if (ua !== ub) return ub - ua; // consolidate into warehouses already shipping this order
+      const aa = availability(a.id, l.product_id), ab = availability(b.id, l.product_id);
+      if (aa !== ab) return ab - aa; // largest availability first → fewest splits
+      return a.shipping_cost_weight - b.shipping_cost_weight;
+    });
+    for (const wh of order) {
+      if (remaining <= 0) break;
+      const avail = Math.max(0, Math.min(availability(wh.id, l.product_id), remaining));
+      if (avail > 0) {
+        plan.push({ line_id: l.id, product: l.name, warehouse_id: wh.id, warehouse: wh.name, weight: wh.shipping_cost_weight, qty: avail, status: 'planned' });
+        committed[`${wh.id}:${l.product_id}`] = (committed[`${wh.id}:${l.product_id}`] || 0) + avail;
+        remaining -= avail;
+        if (!usedWH.has(wh.id)) { usedWH.add(wh.id); shipments++; estCost += baseShip * wh.shipping_cost_weight; }
+      }
+    }
+    if (remaining > 0) {
+      const cheapest = [...warehouses].sort((a, b) => a.shipping_cost_weight - b.shipping_cost_weight)[0];
+      plan.push({ line_id: l.id, product: l.name, warehouse_id: cheapest.id, warehouse: cheapest.name, weight: cheapest.shipping_cost_weight, qty: remaining, status: 'backorder' });
+    }
+  }
+  const perWarehouse = {};
+  for (const p of plan) {
+    perWarehouse[p.warehouse_id] = perWarehouse[p.warehouse_id] || { warehouse_id: p.warehouse_id, warehouse: p.warehouse, qty: 0, backorder: 0 };
+    if (p.status === 'planned') perWarehouse[p.warehouse_id].qty += p.qty; else perWarehouse[p.warehouse_id].backorder += p.qty;
+  }
+  return { lines: plan, per_warehouse: Object.values(perWarehouse), shipment_count: shipments, est_cost: r2(estCost) };
+}
+function canConsolidate(quotationId) {
+  const rows = db.prepare(`SELECT fs.*, l.product_id FROM fulfillment_splits fs JOIN quotation_lines l ON l.id=fs.line_id
+    WHERE fs.quotation_id=? AND fs.status='backorder'`).all(quotationId);
+  for (const r of rows) {
+    const whs = db.prepare('SELECT warehouse_id, qty FROM stock_levels WHERE product_id=? AND qty>0').all(r.product_id);
+    if (whs.length) return true;
+  }
+  return false;
+}
+
 module.exports = {
-  tierPriceRule, unitPriceFor, allowedDiscountFor, effectiveDiscount, computeRisk, requiredApprovalLevel, recomputeTotals, upsellSuggestions, r1, r2,
+  tierPriceRule, unitPriceFor, allowedDiscountFor, effectiveDiscount, computeRisk, requiredApprovalLevel, recomputeTotals, upsellSuggestions, suggestSplit, canConsolidate, r1, r2,
 };

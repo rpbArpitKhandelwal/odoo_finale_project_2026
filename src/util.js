@@ -1,0 +1,71 @@
+/* DealFlow360 — auth/session middleware & helpers */
+'use strict';
+const crypto = require('crypto');
+const { db } = require('./db');
+
+const COOKIE = 'df_session';
+const PORTAL_COOKIE = 'df_portal';
+
+function parseCookies(req) {
+  const out = {}; const h = req.headers.cookie || '';
+  for (const part of h.split(';')) {
+    const i = part.indexOf('='); if (i < 0) continue;
+    out[part.slice(0, i).trim()] = decodeURIComponent(part.slice(i + 1).trim());
+  }
+  return out;
+}
+function setCookie(res, name, value, maxAgeSec) {
+  res.setHeader('Set-Cookie', `${name}=${encodeURIComponent(value)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAgeSec}`);
+}
+function clearCookie(res, name) { setCookie(res, name, '', 0); }
+
+function createSession(userId) {
+  const token = crypto.randomBytes(32).toString('hex');
+  const expires = new Date(Date.now() + 7 * 86400000).toISOString();
+  db.prepare('INSERT INTO sessions(token,user_id,expires_at) VALUES(?,?,?)').run(token, userId, expires);
+  return token;
+}
+function destroySession(token) { if (token) db.prepare('DELETE FROM sessions WHERE token=?').run(token); }
+
+function userForToken(token) {
+  if (!token) return null;
+  const s = db.prepare('SELECT * FROM sessions WHERE token=?').get(token);
+  if (!s || s.expires_at < new Date().toISOString()) return null;
+  const u = db.prepare('SELECT u.*, c.name customer_name, c.tier customer_tier FROM users u LEFT JOIN customers c ON c.id=u.customer_id WHERE u.id=? AND u.active=1').get(s.user_id);
+  return u || null;
+}
+
+/* req.user attached for internal users (any role) */
+function requireAuth(req, res, next) {
+  const u = userForToken(parseCookies(req)[COOKIE]);
+  if (!u) return res.status(401).json({ error: 'Not signed in' });
+  req.user = u; next();
+}
+/* internal (non-customer) users only */
+function requireInternal(req, res, next) {
+  const u = userForToken(parseCookies(req)[COOKIE]);
+  if (!u) return res.status(401).json({ error: 'Not signed in' });
+  if (u.role === 'customer') return res.status(403).json({ error: 'Internal access only' });
+  req.user = u; next();
+}
+function requireRole(...roles) {
+  return (req, res, next) => {
+    const u = userForToken(parseCookies(req)[COOKIE]);
+    if (!u) return res.status(401).json({ error: 'Not signed in' });
+    if (!roles.includes(u.role)) return res.status(403).json({ error: `Requires role: ${roles.join(' / ')}` });
+    req.user = u; next();
+  };
+}
+/* portal customer session OR quotation magic token */
+function requirePortal(req, res, next) {
+  const u = userForToken(parseCookies(req)[PORTAL_COOKIE]);
+  if (u && u.role === 'customer') { req.user = u; req.via = 'login'; return next(); }
+  const key = req.query.k || req.headers['x-portal-key'];
+  if (key) {
+    const q = db.prepare('SELECT * FROM quotations WHERE portal_token=?').get(String(key));
+    if (q) { req.user = null; req.quote = q; req.via = 'magic'; return next(); }
+  }
+  return res.status(401).json({ error: 'Portal sign-in required' });
+}
+
+module.exports = { COOKIE, PORTAL_COOKIE, parseCookies, setCookie, clearCookie, createSession, destroySession, userForToken, requireAuth, requireInternal, requireRole, requirePortal };

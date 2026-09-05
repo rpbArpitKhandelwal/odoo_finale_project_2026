@@ -144,44 +144,13 @@ r.post('/invoices/:id/void', requireRole('admin', 'finance'), async (req, res) =
 
 /* download a single invoice as PDF (internal) */
 r.get('/invoices/:id/pdf', requireInternal, async (req, res) => {
-  const out = await invoicePDF(Number(req.params.id));
-  if (out.error) return res.status(out.error === 'not found' ? 404 : 400).json({ error: out.error });
+  const { invoiceDocument } = require('../invoiceDoc');
+  const out = await invoiceDocument(Number(req.params.id));
+  if (out.error) return res.status(404).json({ error: 'Invoice not found' });
   res.setHeader('Content-Type', 'application/pdf');
   res.setHeader('Content-Disposition', `attachment; filename="${out.filename}"`);
   res.end(out.buffer);
 });
-
-/* compose the invoice document — shared by internal + portal download */
-async function invoicePDF(invoiceId) {
-  const { buildPDF } = require('../exporter');
-  const inv = await ONE(`SELECT i.*, q.number quote_number, q.order_discount_pct, q.currency, q.customer_id, q.id qid,
-    c.name customer_name, c.tier customer_tier, c.address customer_address
-    FROM invoices i JOIN quotations q ON q.id=i.quotation_id JOIN customers c ON c.id=i.customer_id WHERE i.id=?`, [invoiceId]);
-  if (!inv) return { error: 'not found' };
-  const lines = await Q(`SELECT l.*, p.tax_rate FROM quotation_lines l JOIN products p ON p.id=l.product_id WHERE l.quotation_id=? ORDER BY l.sort, l.id`, [inv.qid]);
-  const od = inv.order_discount_pct || 0;
-  const covered = lines.filter((l) => (inv.kind === 'recurring' ? l.line_type === 'subscription' : inv.kind === 'one_time' ? l.line_type === 'one_time' : true));
-  const rows = covered.map((l) => {
-    const eff = E.effectiveDiscount(l.discount_pct, od);
-    const net = l.qty * l.unit_price * (1 - eff / 100);
-    return [l.description, String(l.qty), l.unit_price.toFixed(2), `${eff.toFixed(1)}%`, net.toFixed(2)];
-  });
-  if (inv.kind === 'credit_note') rows.push(['Credit note adjustment', '1', inv.amount.toFixed(2), '—', inv.amount.toFixed(2)]);
-  const cur = inv.currency === 'INR' ? 'INR' : 'USD';
-  const headers = ['Description', 'Qty', `Unit (${cur})`, 'Discount', `Net (${cur})`];
-  const title = `DealFlow360 — Invoice ${inv.number}`;
-  const meta = [
-    `Customer: ${inv.customer_name} (${inv.customer_tier} partner)`,
-    `Quotation: ${inv.quote_number}   Type: ${inv.kind.replace(/_/g, ' ')}   Status: ${inv.status.toUpperCase()}`,
-    `Issued: ${String(inv.created_at || '').slice(0, 10)}   Due: ${String(inv.due_date || '').slice(0, 10) || '-'}${inv.paid_at ? `   Paid: ${String(inv.paid_at).slice(0, 10)}` : ''}`,
-    inv.kind === 'recurring' ? 'Covers the current recurring cycle for subscription lines on this order.' : inv.kind === 'credit_note' ? 'Credit note issued per the subscription cancellation policy.' : 'Covers all one-time products and services on this order.',
-  ];
-  const foot = ['', '', '', 'TOTAL DUE', `${cur} ${Number(inv.amount).toFixed(2)}`];
-  return {
-    buffer: buildPDF(title, headers, rows, foot, meta),
-    filename: `${inv.number}.pdf`,
-  };
-}
 
 /* generate due recurring invoices for a quotation */
 r.post('/quotations/:id/billing/generate', requireInternal, async (req, res) => {

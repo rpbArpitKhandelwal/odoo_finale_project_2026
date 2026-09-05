@@ -78,7 +78,22 @@ r.get('/commissions', requireInternal, async (req, res) => {
   res.json({ commissions: rows, sums });
 });
 
-r.get('/commissions/:id', requireInternal, async (req, res) => {
+/* Alias for /commissions/rules so it doesn't collide with :id */
+r.get('/commissions/rules', requireInternal, async (req, res, next) => {
+  try {
+    const rules = await Q(`SELECT cr.*, u.name salesperson_name, c.name category_name, p.name product_name
+      FROM commission_rules cr
+      LEFT JOIN users u ON u.id=cr.salesperson_id
+      LEFT JOIN categories c ON c.id=cr.category_id
+      LEFT JOIN products p ON p.id=cr.product_id
+      ORDER BY cr.id`);
+    const reps = await Q(`SELECT id, name, sales_team FROM users WHERE role='salesrep' AND active=1 ORDER BY name`);
+    res.json({ rules, reps });
+  } catch (e) { next(e); }
+});
+
+r.get('/commissions/:id', requireInternal, async (req, res, next) => {
+  if (isNaN(Number(req.params.id))) return next();
   const row = await ONE(`SELECT cm.*, u.name salesperson_name, u.sales_team, q.number quote_number, q.total quote_total, q.margin_pct quote_margin,
     c.name customer_name, i.number invoice_number, i.amount invoice_amount
     FROM commissions cm

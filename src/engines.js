@@ -114,13 +114,14 @@ async function upsellSuggestions(quotationId) {
   const customer = await ONE('SELECT * FROM customers WHERE id=?', [q.customer_id]);
   const lines = await Q('SELECT * FROM quotation_lines WHERE quotation_id=?', [quotationId]);
   const inCart = new Set(lines.map(l => l.product_id));
+  const dismissed = new Set(String(q.dismissed_suggestions || '').split(',').filter(Boolean).map(Number));
   const minMargin = parseFloat(await getSetting('min_margin_pct', 30));
   const scores = new Map(); // product_id -> best score
   for (const l of lines) {
     const rules = await Q(`SELECT u.*, p.promoted FROM upsell_rules u JOIN products p ON p.id=u.suggested_product_id
       WHERE u.trigger_product_id=? AND u.active=1 AND p.active=1`, [l.product_id]);
     for (const r of rules) {
-      if (inCart.has(r.suggested_product_id)) continue;
+      if (inCart.has(r.suggested_product_id) || dismissed.has(r.suggested_product_id)) continue;
       const score = r.co_score + (r.promoted ? 0.15 : 0);
       const prev = scores.get(r.suggested_product_id) || 0;
       if (score > prev) scores.set(r.suggested_product_id, score);

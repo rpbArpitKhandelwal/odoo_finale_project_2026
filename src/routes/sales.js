@@ -179,11 +179,9 @@ r.post('/quotations/:id/submit', requireInternal, (req, res) => {
     db.prepare(`UPDATE quotations SET status='approved', approval_level='none', submitted_at=?, last_activity_at=datetime('now') WHERE id=?`).run(up.submitted_at, q.id);
     E.audit('quotation', q.id, req.user, 'auto_approved', `No approval needed (blended risk ${risk.risk_score}) — ready for fulfillment`);
   } else {
-    const status = level === 'manager' ? 'pending_manager' : 'pending_finance';
-    db.prepare(`UPDATE quotations SET status=?, approval_level=?, submitted_at=?, last_activity_at=datetime('now') WHERE id=?`).run(status, level, up.submitted_at, q.id);
-    db.prepare('DELETE FROM approvals WHERE quotation_id=?').run(q.id);
-    if (level === 'finance') db.prepare(`INSERT INTO approvals(quotation_id,level,sequence,status) VALUES(?,?,1,'pending')`).run(q.id, 'manager');
-    db.prepare(`INSERT INTO approvals(quotation_id,level,sequence,status) VALUES(?,?,?,'pending')`).run(q.id, level, level === 'finance' ? 2 : 1);
+    // manager always reviews first; finance joins when the chain requires it
+    db.prepare(`UPDATE quotations SET status='pending_manager', approval_level=?, submitted_at=?, last_activity_at=datetime('now') WHERE id=?`).run(level, up.submitted_at, q.id);
+    E.routeForApproval(q.id, level);
     E.audit('quotation', q.id, req.user, 'submitted_for_approval',
       `Auto-routed to ${level === 'finance' ? 'Manager → Finance' : 'Sales Manager'} — blended risk ${risk.risk_score}, worst line ${risk.max_violation} pts over ceiling`);
   }
@@ -260,11 +258,8 @@ r.post('/quotations/:id/negotiation/:nid', requireInternal, (req, res) => {
       const { level, risk } = E.requiredApprovalLevel(fresh);
       db.prepare('UPDATE negotiations SET status=?, resolved_at=? WHERE id=?').run('accepted', now, n.id);
       if (level !== 'none') {
-        const status = level === 'manager' ? 'pending_manager' : 'pending_finance';
-        db.prepare(`UPDATE quotations SET status=?, approval_level=? WHERE id=?`).run(status, level, q.id);
-        db.prepare('DELETE FROM approvals WHERE quotation_id=?').run(q.id);
-        if (level === 'finance') db.prepare(`INSERT INTO approvals(quotation_id,level,sequence,status) VALUES(?,?,1,'pending')`).run(q.id, 'manager');
-        db.prepare(`INSERT INTO approvals(quotation_id,level,sequence,status) VALUES(?,?,?,'pending')`).run(q.id, level, level === 'finance' ? 2 : 1);
+        db.prepare(`UPDATE quotations SET status='pending_manager', approval_level=? WHERE id=?`).run(level, q.id);
+        E.routeForApproval(q.id, level);
         E.audit('quotation', q.id, req.user, 're_entered_approval',
           `Accepted counter at ${n.proposed_discount}% → blended risk ${risk.risk_score}; re-routed to ${level} automatically`);
       } else {

@@ -7,6 +7,20 @@ const E = require('../engines');
 
 const r = express.Router();
 
+/* Public demo quotes list so judges can easily click into live portal quotes */
+r.get('/portal/demo-quotes', async (_req, res) => {
+  try {
+    const rows = await Q(`SELECT q.number, q.status, q.total, q.currency, q.portal_token, c.name customer_name, c.tier customer_tier
+      FROM quotations q JOIN customers c ON c.id=q.customer_id
+      WHERE q.portal_token IS NOT NULL
+      ORDER BY q.id DESC LIMIT 6`);
+    res.json({ quotes: rows });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+
 /* resolve which quotation the portal caller may see */
 async function resolveQuote(req, number) {
   if (req.via === 'magic') return req.quote.number === number ? req.quote : null;

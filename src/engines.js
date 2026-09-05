@@ -289,7 +289,7 @@ function generateDueInvoices(quotationId) {
   for (const s of due) {
     const inv = db.prepare('INSERT INTO invoices(number,quotation_id,customer_id,kind,amount,status,due_date) VALUES(?,?,?,?,?,?,?)')
       .run(nextInvoiceNumber(), quotationId, q.customer_id, 'recurring', s.amount, 'open', s.scheduled_date);
-    db.prepare(`UPDATE billing_schedule SET status="invoiced", invoice_id=? WHERE id=?`).run(Number(inv.lastInsertRowid), s.id);
+    db.prepare(`UPDATE billing_schedule SET status='invoiced', invoice_id=? WHERE id=?`).run(Number(inv.lastInsertRowid), s.id);
     created++;
   }
   return created;

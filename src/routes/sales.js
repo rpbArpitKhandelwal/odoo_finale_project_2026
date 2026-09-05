@@ -232,7 +232,7 @@ r.post('/quotations/:id/approve', requireInternal, (req, res) => {
 r.post('/quotations/:id/send', requireInternal, (req, res) => {
   const q = db.prepare('SELECT * FROM quotations WHERE id=?').get(Number(req.params.id));
   if (!q) return res.status(404).json({ error: 'Quotation not found' });
-  if (!['approved', 'sent', 'negotiating'].includes(q.status)) return res.status(400).json({ error: 'Only approved quotations can be sent to the customer' });
+  if (!['approved', 'confirmed', 'fulfilling', 'fulfilled'].includes(q.status)) return res.status(400).json({ error: 'Send the quotation to the customer once it is approved' });
   db.prepare(`UPDATE quotations SET status='sent', sent_at=COALESCE(sent_at, datetime('now')), last_activity_at=datetime('now') WHERE id=?`).run(q.id);
   E.audit('quotation', q.id, req.user, 'sent_to_customer', `Portal link issued: /portal/q/${q.number}`);
   const d = quoteDetail(q.id);

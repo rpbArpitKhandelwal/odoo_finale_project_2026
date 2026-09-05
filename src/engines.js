@@ -295,6 +295,75 @@ function generateDueInvoices(quotationId) {
   return created;
 }
 
+/* ============ 7. DEAL HEALTH ENGINE ============ */
+/* Idempotently materializes stalled / anomaly / slippage alerts. */
+function refreshAlerts() {
+  const stalledDays = parseInt(getSetting('stalled_days', 3));
+  const anomalyMult = parseFloat(getSetting('anomaly_multiplier', 1.5));
+  const slipDays = parseInt(getSetting('slippage_days', 2));
+  const insAlert = db.prepare(`INSERT INTO alerts(kind,quotation_id,message,severity) VALUES(?,?,?,?)
+    ON CONFLICT(kind,quotation_id) DO UPDATE SET message=excluded.message, updated_at=datetime('now')`);
+
+  // stalled: draft/sent/negotiating with no activity for N days
+  const stalled = db.prepare(`SELECT q.*, c.name customer_name, c.id FROM quotations q JOIN customers c ON c.id=q.customer_id
+    WHERE q.status IN ('draft','sent','negotiating') AND julianday('now') - julianday(q.last_activity_at) > ?`).all(stalledDays);
+  for (const q of stalled) {
+    const days = Math.floor((Date.now() - new Date(q.last_activity_at + 'Z').getTime()) / 86400000);
+    insAlert.run('stalled', q.id, `${q.number} (${q.customer_name}) inactive for ${days} days — status: ${q.status}`, 'medium');
+  }
+  // anomaly: confirmed quote whose avg discount far exceeds the rep's own historical average
+  const quotes = db.prepare(`SELECT q.*, c.name customer_name FROM quotations q JOIN customers c ON c.id=q.customer_id
+    WHERE q.status IN ('confirmed','fulfilled')`).all();
+  const byRep = {};
+  for (const q of quotes) {
+    const avgDisc = q.subtotal > 0 ? q.discount_total / q.subtotal * 100 : 0;
+    (byRep[q.rep_id] = byRep[q.rep_id] || []).push({ q, avgDisc: r1(avgDisc) });
+  }
+  for (const [repId, arr] of Object.entries(byRep)) {
+    if (arr.length < 3) continue; // need a baseline before flagging
+    const sorted = [...arr].sort((a, b) => a.q.confirmed_at?.localeCompare(b.q.confirmed_at || '') || 0);
+    for (let i = 1; i < sorted.length; i++) {
+      const baseline = sorted.slice(0, i).reduce((s, x) => s + x.avgDisc, 0) / i;
+      if (baseline > 0 && sorted[i].avgDisc > baseline * anomalyMult) {
+        insAlert.run('anomaly', sorted[i].q.id,
+          `${sorted[i].q.number} (${sorted[i].q.customer_name}): ${sorted[i].avgDisc}% avg discount vs rep baseline ${r1(baseline)}% (×${anomalyMult})`, 'high');
+      }
+    }
+  }
+  // slippage: confirmed & not fully shipped past promised delivery
+  const slipping = db.prepare(`SELECT q.*, c.name customer_name FROM quotations q JOIN customers c ON c.id=q.customer_id
+    WHERE q.status IN ('confirmed','fulfilling') AND q.expected_delivery IS NOT NULL AND julianday('now') - julianday(q.expected_delivery) > ?`).all(slipDays);
+  for (const q of slipping) {
+    const openBO = db.prepare(`SELECT COUNT(*) c FROM fulfillment_splits WHERE quotation_id=? AND status IN ('planned','backorder')`).get(q.id).c;
+    if (openBO > 0) {
+      insAlert.run('slippage', q.id, `${q.number} (${q.customer_name}) past promised delivery with ${openBO} open fulfillment line(s)`, 'high');
+    }
+  }
+}
+function repBaselineDiscount(repId, excludeQuoteId) {
+  const rows = db.prepare(`SELECT subtotal, discount_total FROM quotations WHERE rep_id=? AND id!=? AND status IN ('confirmed','fulfilled') AND subtotal>0`).all(repId, excludeQuoteId);
+  if (!rows.length) return null;
+  return r1(rows.reduce((s, r) => s + r.discount_total / r.subtotal * 100, 0) / rows.length);
+}
+
+/* ============ 7b. APPROVAL ROUTING ============ */
+/* Creates the full approval chain for a quotation at the required level: manager is always step 1, finance step 2 when required. */
+function routeForApproval(quotationId, level) {
+  db.prepare('DELETE FROM approvals WHERE quotation_id=?').run(quotationId);
+  if (level === 'none') return;
+  db.prepare(`INSERT INTO approvals(quotation_id,level,sequence,status) VALUES(?,?,1,'pending')`).run(quotationId, 'manager');
+  if (level === 'finance') db.prepare(`INSERT INTO approvals(quotation_id,level,sequence,status) VALUES(?,?,2,'waiting')`).run(quotationId, 'finance');
+}
+
+/* ============ 8. AUDIT ============ */
+function audit(entity, entityId, user, action, details) {
+  db.prepare('INSERT INTO audit_log(entity,entity_id,user_id,user_name,action,details) VALUES(?,?,?,?,?,?)')
+    .run(entity, entityId, user ? user.id : null, user ? user.name : 'system', action, details || '');
+}
+
 module.exports = {
-  tierPriceRule, unitPriceFor, allowedDiscountFor, effectiveDiscount, computeRisk, requiredApprovalLevel, recomputeTotals, upsellSuggestions, suggestSplit, canConsolidate, generateBillingOnConfirm, prorateLineChange, cancelSubscriptionCredit, generateDueInvoices, r1, r2,
+  tierPriceRule, unitPriceFor, allowedDiscountFor, effectiveDiscount, computeRisk, requiredApprovalLevel,
+  recomputeTotals, upsellSuggestions, suggestSplit, canConsolidate, generateBillingOnConfirm,
+  prorateLineChange, cancelSubscriptionCredit, generateDueInvoices, refreshAlerts, repBaselineDiscount,
+  routeForApproval, audit, r1, r2, nextInvoiceNumber,
 };

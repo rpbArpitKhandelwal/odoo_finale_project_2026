@@ -31,7 +31,7 @@ async function userForToken(token) {
   if (!token) return null;
   const s = await ONE('SELECT * FROM sessions WHERE token=?', [token]);
   if (!s || s.expires_at < new Date().toISOString()) return null;
-  const u = await ONE('SELECT u.*, c.name customer_name, c.tier customer_tier FROM users u LEFT JOIN customers c ON c.id=u.customer_id WHERE u.id=? AND u.active=1', [s.user_id]);
+  const u = await ONE('SELECT u.*, c.name customer_name, c.tier customer_tier FROM users u LEFT JOIN customers c ON c.id=u.customer_id WHERE u.id=? AND u.active', [s.user_id]);
   return u || null;
 }
 

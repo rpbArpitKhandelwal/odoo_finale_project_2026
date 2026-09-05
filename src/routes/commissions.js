@@ -103,6 +103,7 @@ r.get('/commissions/:id', requireInternal, async (req, res, next) => {
     LEFT JOIN invoices i ON i.id=cm.invoice_id
     WHERE cm.id=?`, [Number(req.params.id)]);
   if (!row) return res.status(404).json({ error: 'Commission not found' });
+  if (req.user.role === 'salesrep' && row.salesperson_id !== req.user.id) return res.status(403).json({ error: 'Salespeople can only view their own commissions' });
   const auditRows = await Q(`SELECT * FROM audit_log WHERE entity='commission' AND entity_id=? ORDER BY id DESC`, [row.id]);
   res.json({ commission: row, audit: auditRows });
 });

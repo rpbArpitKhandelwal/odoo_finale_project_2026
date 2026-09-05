@@ -533,10 +533,26 @@ async function seed() {
     await run(insL, qid, laptop, null, 'Laptop Pro 15"', 1, 1299, 940, 5, 'one_time', null, null, 1);
 
     // QT-1039: confirmed & fulfilled with paid invoices (Gamma, Vikram) -> reporting baseline
-    qid = (await run(insQ, 'QT-1039', gamma, uVikram, 'fulfilled', 'INR', 83, 0, 0, 0, 0, 0, 0, 0, 0, 0, 'none', daysAgo(3), daysAgo(2), token(), daysAgo(18), daysAgo(12), daysAgo(18), null, daysAgo(17))).lastInsertRowid;
-    await run(insL, qid, mouse, null, 'Wireless Mouse (3-Pack)', 5, (59 + 110) * 4.32, 66 * 4.32, 0, 'one_time', null, null, 0);
-    await run(insL, qid, kbd, null, 'Mechanical Keyboard', 10, 129 * 4.32, 58 * 4.32, 0, 'one_time', null, null, 1);
-    await run(insL, qid, security, null, 'Security Suite (per qtr)', 4, 399 * 4.32, 120 * 4.32, 0, 'subscription', quarterly, 'quarterly', 2);
+    // totals computed from the same line values below (0% discount): mouse/kbd 8% tax, security 5%
+    const rr2 = (x) => Math.round(x * 100) / 100;
+    const rr1 = (x) => Math.round(x * 10) / 10;
+    const l1039Defs = [
+      [mouse, 'Wireless Mouse (3-Pack)', 5, (59 + 110) * 4.32, 66 * 4.32, 8, 'one_time', null, null, 0],
+      [kbd, 'Mechanical Keyboard', 10, 129 * 4.32, 58 * 4.32, 8, 'one_time', null, null, 1],
+      [security, 'Security Suite (per qtr)', 4, 399 * 4.32, 120 * 4.32, 5, 'subscription', quarterly, 'quarterly', 2],
+    ];
+    let sub1039 = 0, tax1039 = 0, cost1039 = 0;
+    for (const [, , qty, price, cost, taxRate] of l1039Defs) {
+      sub1039 += qty * price; tax1039 += qty * price * taxRate / 100; cost1039 += qty * cost;
+    }
+    const tot1039 = sub1039 + tax1039;
+    const margin1039 = (tot1039 - cost1039) / tot1039 * 100;
+    qid = (await run(insQ, 'QT-1039', gamma, uVikram, 'fulfilled', 'INR', 83, 0,
+      rr2(sub1039), 0, rr2(tax1039), rr2(tot1039), rr2(cost1039), rr1(margin1039), 0, 0, 'none',
+      daysAgo(3), daysAgo(2), token(), daysAgo(18), daysAgo(12), daysAgo(18), null, daysAgo(17))).lastInsertRowid;
+    for (const [pid, desc, qty, price, cost, , type, plan, period, sort] of l1039Defs) {
+      await run(insL, qid, pid, null, desc, qty, price, cost, 0, type, plan, period, sort);
+    }
 
     // more historical confirmed quotes (baseline for anomaly stats)
     const hist = [

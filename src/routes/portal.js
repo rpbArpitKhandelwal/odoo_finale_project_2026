@@ -67,29 +67,14 @@ r.get('/portal/quote/:number', requirePortal, async (req, res) => {
 r.get('/portal/quote/:number/invoice/:invId/pdf', requirePortal, async (req, res) => {
   const q = await resolveQuote(req, req.params.number);
   if (!q) return res.status(404).json({ error: 'Quotation not found' });
-  const inv = await ONE('SELECT * FROM invoices WHERE id=? AND quotation_id=?', [Number(req.params.invId), q.id]);
+  const inv = await ONE('SELECT id, status FROM invoices WHERE id=? AND quotation_id=?', [Number(req.params.invId), q.id]);
   if (!inv || inv.status === 'void') return res.status(404).json({ error: 'Invoice not found' });
-  const { buildPDF } = require('../exporter');
-  const lines = await Q('SELECT l.* FROM quotation_lines l WHERE l.quotation_id=? ORDER BY l.sort, l.id', [q.id]);
-  const od = q.order_discount_pct || 0;
-  const covered = lines.filter((l) => (inv.kind === 'recurring' ? l.line_type === 'subscription' : inv.kind === 'one_time' ? l.line_type === 'one_time' : true));
-  const rows = covered.map((l) => {
-    const eff = E.effectiveDiscount(l.discount_pct, od);
-    const net = l.qty * l.unit_price * (1 - eff / 100);
-    return [l.description, String(l.qty), l.unit_price.toFixed(2), `${eff.toFixed(1)}%`, net.toFixed(2)];
-  });
-  if (inv.kind === 'credit_note') rows.push(['Credit note adjustment', '1', inv.amount.toFixed(2), '—', inv.amount.toFixed(2)]);
-  const cur = q.currency === 'INR' ? 'INR' : 'USD';
-  const cust = await ONE('SELECT name, tier FROM customers WHERE id=?', [q.customer_id]);
-  const meta = [
-    `Customer: ${cust ? cust.name : ''}${cust ? ` (${cust.tier} partner)` : ''}`,
-    `Quotation: ${q.number}   Type: ${inv.kind.replace(/_/g, ' ')}   Status: ${inv.status.toUpperCase()}`,
-    `Issued: ${String(inv.created_at || '').slice(0, 10)}   Due: ${String(inv.due_date || '').slice(0, 10) || '-'}${inv.paid_at ? `   Paid: ${String(inv.paid_at).slice(0, 10)}` : ''}`,
-  ];
+  const { invoiceDocument } = require('../invoiceDoc');
+  const out = await invoiceDocument(Number(req.params.invId));
+  if (out.error) return res.status(404).json({ error: 'Invoice not found' });
   res.setHeader('Content-Type', 'application/pdf');
-  res.setHeader('Content-Disposition', `attachment; filename="${inv.number}.pdf"`);
-  res.end(buildPDF(`DealFlow360 — Invoice ${inv.number}`, ['Description', 'Qty', `Unit (${cur})`, 'Discount', `Net (${cur})`], rows,
-    ['', '', '', 'TOTAL DUE', `${cur} ${Number(inv.amount).toFixed(2)}`], meta));
+  res.setHeader('Content-Disposition', `attachment; filename="${out.filename}"`);
+  res.end(out.buffer);
 });
 
 /* line-level comment or change request */

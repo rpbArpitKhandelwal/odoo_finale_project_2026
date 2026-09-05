@@ -208,6 +208,93 @@ function canConsolidate(quotationId) {
   return false;
 }
 
+/* ============ 6. BILLING / SUBSCRIPTION ENGINE ============ */
+function periodAddMonths(date, months) {
+  const d = new Date(date); d.setMonth(d.getMonth() + months); return d;
+}
+function periodMonths(period) { return period === 'monthly' ? 1 : period === 'quarterly' ? 3 : 12; }
+function nextInvoiceNumber() {
+  const row = db.prepare(`SELECT number FROM invoices WHERE number LIKE 'INV-%' ORDER BY CAST(substr(number,5) AS INTEGER) DESC LIMIT 1`).get();
+  const n = row ? parseInt(row.number.slice(4), 10) + 1 : 2033;
+  return `INV-${n}`;
+}
+/* On confirmation: one-time lines → single invoice; recurring lines → first-cycle invoice + future schedule. */
+function generateBillingOnConfirm(quotationId) {
+  const q = db.prepare('SELECT * FROM quotations WHERE id=?').get(quotationId);
+  if (!q) return;
+  const existing = db.prepare('SELECT COUNT(*) c FROM invoices WHERE quotation_id=?').get(quotationId).c;
+  if (existing > 0) return;
+  const lines = db.prepare('SELECT * FROM quotation_lines WHERE quotation_id=?').all(quotationId);
+  const od = q.order_discount_pct || 0;
+  const now = new Date().toISOString();
+  let oneTimeNet = 0, oneTimeTax = 0;
+  for (const l of lines.filter(l => l.line_type === 'one_time')) {
+    const net = l.qty * l.unit_price * (1 - effectiveDiscount(l.discount_pct, od) / 100);
+    oneTimeNet += net;
+    oneTimeTax += net * ((db.prepare('SELECT tax_rate FROM products WHERE id=?').get(l.product_id) || { tax_rate: 0 }).tax_rate) / 100;
+  }
+  if (oneTimeNet > 0) {
+    db.prepare('INSERT INTO invoices(number,quotation_id,customer_id,kind,amount,status,due_date) VALUES(?,?,?,?,?,?,?)')
+      .run(nextInvoiceNumber(), quotationId, q.customer_id, 'one_time', r2(oneTimeNet + oneTimeTax), 'open', now.slice(0, 10));
+  }
+  for (const l of lines.filter(l => l.line_type === 'subscription')) {
+    const net = l.qty * l.unit_price * (1 - effectiveDiscount(l.discount_pct, od) / 100);
+    const inv = db.prepare('INSERT INTO invoices(number,quotation_id,customer_id,kind,amount,status,due_date) VALUES(?,?,?,?,?,?,?)')
+      .run(nextInvoiceNumber(), quotationId, q.customer_id, 'recurring', r2(net), 'open', now.slice(0, 10));
+    db.prepare(`INSERT INTO billing_schedule(quotation_id,line_id,scheduled_date,description,amount,status,invoice_id)
+      VALUES(?,?,?,?,?,?,?)`).run(quotationId, l.id, now.slice(0, 10), `${l.description} — cycle 1`, r2(net), 'invoiced', Number(inv.lastInsertRowid));
+    const months = periodMonths(l.billing_period || 'monthly');
+    for (let i = 1; i <= 11; i++) {
+      const d = periodAddMonths(now, months * i).toISOString().slice(0, 10);
+      db.prepare(`INSERT INTO billing_schedule(quotation_id,line_id,scheduled_date,description,amount,status,invoice_id)
+        VALUES(?,?,?,?,?,?,?)`).run(quotationId, l.id, d, `${l.description} — cycle ${i + 1}`, r2(net), 'scheduled', null);
+    }
+  }
+}
+/* Mid-cycle quantity change → daily proration credit/charge for the remainder of the current cycle. */
+function prorateLineChange(line, newQty) {
+  const q = db.prepare('SELECT * FROM quotations WHERE id=?').get(line.quotation_id);
+  const months = periodMonths(line.billing_period || 'monthly');
+  const cycleEnd = periodAddMonths(new Date(), months); // current cycle boundary (approx from today for demo)
+  const daysInCycle = Math.max(1, Math.round((cycleEnd - new Date()) / 86400000) + 30);
+  const daysRemaining = Math.max(0, Math.round((cycleEnd - new Date()) / 86400000));
+  if (daysRemaining <= 0) return null;
+  const od = q.order_discount_pct || 0;
+  const price = line.unit_price * (1 - effectiveDiscount(line.discount_pct, od) / 100);
+  const delta = (newQty - line.qty) * price * (daysRemaining / Math.max(1, daysInCycle));
+  return { delta: r2(delta), days_remaining: daysRemaining, days_in_cycle: daysInCycle };
+}
+/* Cancel subscription → credit note per plan policy. */
+function cancelSubscriptionCredit(line) {
+  const q = db.prepare('SELECT * FROM quotations WHERE id=?').get(line.quotation_id);
+  const plan = line.plan_id ? db.prepare('SELECT * FROM subscription_plans WHERE id=?').get(line.plan_id) : null;
+  const od = q.order_discount_pct || 0;
+  const net = line.qty * line.unit_price * (1 - effectiveDiscount(line.discount_pct, od) / 100);
+  let refund = 0, policy = 'none';
+  if (plan) {
+    policy = plan.cancellation_policy;
+    const months = periodMonths(plan.billing_period);
+    const cycleEnd = periodAddMonths(new Date(), months);
+    const daysRemaining = Math.max(0, Math.round((cycleEnd - new Date()) / 86400000));
+    const daysInCycle = 30 * months;
+    if (policy === 'refund_prorated') refund = net * daysRemaining / daysInCycle;
+    else if (policy === 'refund_pct') refund = net * plan.refund_pct / 100 * daysRemaining / daysInCycle;
+  }
+  return { refund: r2(refund), policy };
+}
+function generateDueInvoices(quotationId) {
+  const due = db.prepare(`SELECT * FROM billing_schedule WHERE quotation_id=? AND status='scheduled' AND scheduled_date<=date('now')`).all(quotationId);
+  const q = db.prepare('SELECT * FROM quotations WHERE id=?').get(quotationId);
+  let created = 0;
+  for (const s of due) {
+    const inv = db.prepare('INSERT INTO invoices(number,quotation_id,customer_id,kind,amount,status,due_date) VALUES(?,?,?,?,?,?,?)')
+      .run(nextInvoiceNumber(), quotationId, q.customer_id, 'recurring', s.amount, 'open', s.scheduled_date);
+    db.prepare(`UPDATE billing_schedule SET status="invoiced", invoice_id=? WHERE id=?`).run(Number(inv.lastInsertRowid), s.id);
+    created++;
+  }
+  return created;
+}
+
 module.exports = {
-  tierPriceRule, unitPriceFor, allowedDiscountFor, effectiveDiscount, computeRisk, requiredApprovalLevel, recomputeTotals, upsellSuggestions, suggestSplit, canConsolidate, r1, r2,
+  tierPriceRule, unitPriceFor, allowedDiscountFor, effectiveDiscount, computeRisk, requiredApprovalLevel, recomputeTotals, upsellSuggestions, suggestSplit, canConsolidate, generateBillingOnConfirm, prorateLineChange, cancelSubscriptionCredit, generateDueInvoices, r1, r2,
 };

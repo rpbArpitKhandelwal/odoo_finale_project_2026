@@ -95,11 +95,8 @@ r.post('/portal/quote/:number/confirm', requirePortal, (req, res) => {
   const fresh = db.prepare('SELECT * FROM quotations WHERE id=?').get(q.id);
   const { level, risk } = E.requiredApprovalLevel(fresh);
   if (level !== 'none') {
-    const status = level === 'manager' ? 'pending_manager' : 'pending_finance';
-    db.prepare(`UPDATE quotations SET status=?, approval_level=? WHERE id=?`).run(status, level, q.id);
-    db.prepare('DELETE FROM approvals WHERE quotation_id=?').run(q.id);
-    if (level === 'finance') db.prepare(`INSERT INTO approvals(quotation_id,level,sequence,status) VALUES(?,?,1,'pending')`).run(q.id, 'manager');
-    db.prepare(`INSERT INTO approvals(quotation_id,level,sequence,status) VALUES(?,?,?,'pending')`).run(q.id, level, level === 'finance' ? 2 : 1);
+    db.prepare(`UPDATE quotations SET status='pending_manager', approval_level=? WHERE id=?`).run(level, q.id);
+    E.routeForApproval(q.id, level);
     E.audit('quotation', q.id, null, 're_entered_approval',
       `Customer confirmed negotiated terms (risk ${risk.risk_score}) — automatically re-routed to ${level}`);
   } else {

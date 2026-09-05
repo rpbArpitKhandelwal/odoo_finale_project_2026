@@ -36,7 +36,7 @@ r.post('/products', requireRole('admin'), async (req, res) => {
   try {
     const info = await RUN(`INSERT INTO products(name,sku,category_id,product_type,base_price,cost_price,unit,tax_rate,description,promoted,stocked)
       VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
-      [b.name, b.sku, b.category_id, b.product_type || 'one_time', b.base_price || 0, b.cost_price || 0, b.unit || 'units', b.tax_rate || 0, b.description || '', b.promoted ? 1 : 0, b.stocked === 0 ? 0 : 1]);
+      [b.name, b.sku, b.category_id, b.product_type || 'one_time', b.base_price || 0, b.cost_price || 0, b.unit || 'units', b.tax_rate || 0, b.description || '', b.promoted ? true : false, b.stocked === 0 || b.stocked === false ? false : true]);
     await audit('product', info.lastInsertRowid, req.user, 'created', `${b.sku} ${b.name}`);
     res.json({ product: await ONE('SELECT * FROM products WHERE id=?', [info.lastInsertRowid]) });
   } catch (e) { res.status(400).json({ error: 'SKU already exists' }); }
@@ -113,7 +113,7 @@ r.delete('/approval-rules/:id', requireRole('admin'), async (req, res) => { awai
 r.get('/warehouses', requireInternal, async (_q, res) => {
   const warehouses = await Q('SELECT * FROM warehouses ORDER BY name');
   const stock = await Q(`SELECT s.*, p.name product_name, p.sku, w.name warehouse_name FROM stock_levels s
-    JOIN products p ON p.id=s.product_id JOIN warehouses w ON w.id=s.warehouse_id WHERE p.active=1 ORDER BY p.name`);
+    JOIN products p ON p.id=s.product_id JOIN warehouses w ON w.id=s.warehouse_id WHERE p.active ORDER BY p.name`);
   res.json({ warehouses, stock });
 });
 r.post('/warehouses', requireRole('admin', 'finance'), async (req, res) => {
@@ -185,7 +185,7 @@ r.post('/upsell-rules', requireRole('admin', 'manager'), async (req, res) => {
   const { trigger_product_id, suggested_product_id, co_score, source } = req.body || {};
   if (!trigger_product_id || !suggested_product_id) return res.status(400).json({ error: 'Trigger and suggested products required' });
   await RUN(`INSERT INTO upsell_rules(trigger_product_id,suggested_product_id,co_score,source) VALUES(?,?,?,?)
-    ON CONFLICT(trigger_product_id,suggested_product_id) DO UPDATE SET co_score=excluded.co_score, active=1`,
+    ON CONFLICT(trigger_product_id,suggested_product_id) DO UPDATE SET co_score=excluded.co_score, active`,
     [trigger_product_id, suggested_product_id, co_score || 0.5, source || 'manual']);
   await audit('upsell_rule', 0, req.user, 'created', `rule ${trigger_product_id}→${suggested_product_id}`);
   res.json({ ok: true });

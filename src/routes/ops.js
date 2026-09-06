@@ -74,24 +74,11 @@ r.post('/quotations/:id/ship', requireInternal, async (req, res) => {
 r.post('/quotations/:id/consolidate', requireInternal, async (req, res) => {
   const q = await ONE('SELECT * FROM quotations WHERE id=?', [Number(req.params.id)]);
   if (!q) return res.status(404).json({ error: 'Quotation not found' });
-  const backs = await Q(`SELECT fs.*, l.product_id, l.description FROM fulfillment_splits fs
-    JOIN quotation_lines l ON l.id=fs.line_id WHERE fs.quotation_id=? AND fs.status='backorder'`, [q.id]);
-  if (!backs.length) return res.status(400).json({ error: 'No backorder to consolidate' });
-  let moved = 0;
-  for (const b of backs) {
-    let remaining = b.qty;
-    const whs = await Q(`SELECT * FROM stock_levels WHERE product_id=? AND qty>0 ORDER BY qty DESC`, [b.product_id]);
-    for (const wh of whs) {
-      if (remaining <= 0) break;
-      const take = Math.min(wh.qty, remaining);
-      await RUN('UPDATE stock_levels SET qty=qty-? WHERE id=?', [take, wh.id]);
-      await RUN(`INSERT INTO fulfillment_splits(quotation_id,line_id,warehouse_id,qty,status,est_cost) VALUES(?,?,?,?,'planned',0)`,
-        [q.id, b.line_id, wh.warehouse_id, take]);
-      remaining -= take; moved += take;
-    }
-    await RUN(`UPDATE fulfillment_splits SET qty=? WHERE id=?`, [remaining, b.id]);
-    if (remaining === 0) await RUN(`DELETE FROM fulfillment_splits WHERE id=?`, [b.id]);
-  }
+  const backs = await ONE(`SELECT COUNT(*) c FROM fulfillment_splits WHERE quotation_id=? AND status='backorder'`, [q.id]);
+  if (!backs.c) return res.status(400).json({ error: 'No backorder to consolidate' });
+  const moved = await E.consolidateBackorders(q.id); // stock is reserved now and decremented when each shipment leaves
+  if (!moved) return res.status(400).json({ error: 'No free stock available yet for the backordered lines' });
+  await RUN(`DELETE FROM alerts WHERE kind='backorder' AND quotation_id=?`, [q.id]);
   await E.audit('quotation', q.id, req.user, 'backorder_consolidated', `New stock arrived — consolidated ${moved} backordered unit(s) into planned shipments`);
   const remainingAll = await ONE(`SELECT COUNT(*) c FROM fulfillment_splits WHERE quotation_id=? AND status IN ('planned','backorder')`, [q.id]);
   if (remainingAll.c === 0) await RUN(`UPDATE quotations SET status='fulfilled' WHERE id=?`, [q.id]);
@@ -112,10 +99,19 @@ async function qDetail(id) {
 /* ================= BILLING ================= */
 
 r.get('/invoices', requireInternal, async (_req, res) => {
-  const rows = await Q(`SELECT i.*, q.number quote_number, c.name customer_name FROM invoices i
+  const rows = await Q(`SELECT i.*, q.number quote_number, q.currency, q.exchange_rate, c.name customer_name FROM invoices i
     JOIN quotations q ON q.id=i.quotation_id JOIN customers c ON c.id=i.customer_id ORDER BY i.id DESC`);
   const pays = await Q(`SELECT p.*, i.number invoice_number FROM payments p JOIN invoices i ON i.id=p.invoice_id ORDER BY p.id DESC`);
-  res.json({ invoices: rows, payments: pays });
+  const due = await ONE(`SELECT COUNT(*) c FROM billing_schedule bs JOIN quotations q ON q.id=bs.quotation_id
+    WHERE bs.status='scheduled' AND bs.scheduled_date<=${TODAY} AND q.status IN ('confirmed','fulfilling','fulfilled')`);
+  res.json({ invoices: rows, payments: pays, due_cycles: due.c });
+});
+
+/* recurring billing run across every active subscription (finance / admin) */
+r.post('/billing/run-due', requireRole('admin', 'finance'), async (req, res) => {
+  const created = await E.generateDueInvoices(null);
+  if (created) await E.audit('billing', 0, req.user, 'recurring_billing_run', `${created} due subscription cycle(s) invoiced`);
+  res.json({ created });
 });
 
 r.post('/invoices/:id/pay', requireInternal, async (req, res) => {
@@ -166,37 +162,43 @@ r.post('/quotations/:id/lines/:lineId/subscription', requireInternal, async (req
   if (!q || !line) return res.status(404).json({ error: 'Line not found' });
   if (line.line_type !== 'subscription') return res.status(400).json({ error: 'Not a subscription line' });
   const action = req.body?.action; // modify | cancel
+  let proration = null, credit = null;
   if (action === 'modify') {
     const newQty = Number(req.body?.qty);
     if (!newQty || newQty <= 0) return res.status(400).json({ error: 'qty required' });
+    if (newQty === line.qty) return res.status(400).json({ error: 'Quantity is unchanged' });
     const pr = await E.prorateLineChange(line, newQty);
     await RUN('UPDATE quotation_lines SET qty=? WHERE id=?', [newQty, line.id]);
     await E.recomputeTotals(q.id);
-    // adjust future schedule entries
-    const price = line.unit_price * (1 - E.effectiveDiscount(line.discount_pct, q.order_discount_pct) / 100);
-    await RUN(`UPDATE billing_schedule SET amount=? WHERE line_id=? AND status='scheduled'`, [E.r2(newQty * price), line.id]);
-    if (pr && pr.delta !== 0) {
+    // future cycles bill the new quantity (exact unit price, rounded once per cycle)
+    await RUN(`UPDATE billing_schedule SET amount=? WHERE line_id=? AND status='scheduled'`, [E.r2(newQty * await E.recurringUnitPrice(line, q.order_discount_pct)), line.id]);
+    proration = { ...pr, old_qty: line.qty, new_qty: newQty };
+    if (pr.delta !== 0) {
       const kind = pr.delta > 0 ? 'recurring' : 'credit_note';
       const inv = await RUN(`INSERT INTO invoices(number,quotation_id,customer_id,kind,amount,status,due_date) VALUES(?,?,?,?,?,?,${TODAY})`,
         [await E.nextInvoiceNumber(), q.id, q.customer_id, kind, Math.abs(pr.delta), 'open']);
+      proration.invoice_id = inv.lastInsertRowid;
       await E.audit('quotation', q.id, req.user, 'subscription_modified',
-        `${line.description}: qty ${line.qty}→${newQty}, daily proration (${pr.days_remaining}/${pr.days_in_cycle} days) → ${kind === 'credit_note' ? 'credit note' : 'charge'} ${Math.abs(pr.delta)} (${inv.lastInsertRowid})`);
+        `${line.description}: qty ${line.qty}→${newQty}, daily proration ${pr.days_remaining}/${pr.days_in_cycle} days left in cycle (${pr.start} → ${pr.end}) → ${kind === 'credit_note' ? 'credit note' : 'prorated charge'} ${Math.abs(pr.delta)}`);
     } else {
-      await E.audit('quotation', q.id, req.user, 'subscription_modified', `${line.description}: qty ${line.qty}→${newQty} (no prorated delta)`);
+      await E.audit('quotation', q.id, req.user, 'subscription_modified',
+        `${line.description}: qty ${line.qty}→${newQty} — plan proration rule "${pr.rule}": new quantity applies from the next cycle, no adjustment now`);
     }
   } else if (action === 'cancel') {
     const active = await ONE(`SELECT COUNT(*) c FROM billing_schedule WHERE line_id=? AND status='scheduled'`, [line.id]);
     if (!active.c) return res.status(400).json({ error: 'No active cycles remain on this subscription' });
     const cr = await E.cancelSubscriptionCredit(line);
     await RUN(`UPDATE billing_schedule SET status='cancelled' WHERE line_id=? AND status='scheduled'`, [line.id]);
+    credit = cr;
     if (cr.refund > 0) {
-      await RUN(`INSERT INTO invoices(number,quotation_id,customer_id,kind,amount,status,due_date) VALUES(?,?,?,?,?,?,${TODAY})`,
+      const inv = await RUN(`INSERT INTO invoices(number,quotation_id,customer_id,kind,amount,status,due_date) VALUES(?,?,?,?,?,?,${TODAY})`,
         [await E.nextInvoiceNumber(), q.id, q.customer_id, 'credit_note', cr.refund, 'open']);
+      credit.invoice_id = inv.lastInsertRowid;
     }
     await E.audit('quotation', q.id, req.user, 'subscription_cancelled',
-      `${line.description} cancelled (policy: ${cr.policy}) → credit note ${cr.refund}`);
+      `${line.description} cancelled — policy ${cr.policy}${cr.notice_days ? `, ${cr.notice_days}-day notice` : ''}, ${cr.days_remaining}/${cr.days_in_cycle} days unused → ${cr.refund > 0 ? `credit note ${cr.refund}` : 'no refund due'}`);
   } else return res.status(400).json({ error: 'action must be modify|cancel' });
-  const out = { quotation: await ONE('SELECT * FROM quotations WHERE id=?', [q.id]) };
+  const out = { quotation: await ONE('SELECT * FROM quotations WHERE id=?', [q.id]), proration, credit };
   out.schedule = await Q(`SELECT bs.*, l.description FROM billing_schedule bs LEFT JOIN quotation_lines l ON l.id=bs.line_id WHERE bs.quotation_id=? ORDER BY bs.scheduled_date`, [q.id]);
   out.invoices = await Q('SELECT * FROM invoices WHERE quotation_id=? ORDER BY id', [q.id]);
   res.json(out);

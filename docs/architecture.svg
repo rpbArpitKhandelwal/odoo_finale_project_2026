@@ -1,4 +1,279 @@
-// update iteration 9
-// update iteration 19
-// update iteration 29
-// update iteration 39
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1130" viewBox="0 0 1600 1130" font-family="Segoe UI, Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#4E2E5E"/>
+    </marker>
+    <marker id="arrg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#6B7280"/>
+    </marker>
+    <style>
+      .h1{font-size:26px;font-weight:700;fill:#1F2328}
+      .sub{font-size:13px;fill:#66707E}
+      .lane{font-size:12px;font-weight:700;fill:#714B67;letter-spacing:1.4px}
+      .box{fill:#fff;stroke:#DDE1E6;stroke-width:1.2;rx:8}
+      .t{font-size:13px;font-weight:700;fill:#1F2328}
+      .s{font-size:11px;fill:#66707E}
+      .e{font-size:11.5px;fill:#1F2328}
+      .ent{fill:#FBF9FC;stroke:#C9B3D2;stroke-width:1.2;rx:6}
+      .eng{fill:#F3EDF6;stroke:#B78CA9;stroke-width:1.2;rx:8}
+      .api{fill:#EAF3FB;stroke:#9CC3E5;stroke-width:1.2;rx:8}
+      .ui{fill:#F7F8FA;stroke:#C8CDD5;stroke-width:1.2;rx:8}
+      .portal{fill:#FFF4E5;stroke:#F5D4A7;stroke-width:1.2;rx:8}
+      .flow{font-size:11.5px;fill:#1F2328}
+      .num{font-size:11px;font-weight:700;fill:#fff}
+      .rel{stroke:#6B7280;stroke-width:1;fill:none;marker-end:url(#arrg)}
+      .call{stroke:#4E2E5E;stroke-width:1.4;fill:none;marker-end:url(#arr)}
+      .grp{fill:none;stroke:#E3D3E9;stroke-width:1;stroke-dasharray:4 3;rx:10}
+      .grpt{font-size:11px;font-weight:700;fill:#8A6D8A;letter-spacing:1px}
+    </style>
+  </defs>
+  <rect width="1600" height="1130" fill="#F4F4F6"/>
+
+  <!-- title -->
+  <text x="40" y="46" class="h1">DealFlow360 — Architecture &amp; Data Model</text>
+  <text x="40" y="68" class="sub">An intelligent, self-governing sales operations platform · React 18 (Vite) → Node.js / Express 5 → PostgreSQL · business rules live in one engine layer, every route calls it</text>
+  <text x="1560" y="46" text-anchor="end" class="sub">quotation → approval → negotiation → fulfillment → billing → commission → reporting</text>
+
+  <!-- ================= LANE 1: CLIENTS ================= -->
+  <text x="40" y="104" class="lane">CLIENTS — REACT 18 SPA (zero UI libraries, hand-built SVG charts)</text>
+  <rect x="40" y="114" width="470" height="118" class="ui"/>
+  <text x="54" y="136" class="t">Sales Workspace (rep · manager · finance)</text>
+  <text x="54" y="156" class="e">Quotations · Pipeline kanban · Reload Data / Go to Back-end / Close Workspace</text>
+  <text x="54" y="174" class="e">Builder: lines (+/−), line &amp; order discounts, live margin, ceiling badges</text>
+  <text x="54" y="192" class="e">Upsell panel (Add / Dismiss) · Approval chain &amp; risk breakdown · Split</text>
+  <text x="54" y="210" class="e">Invoicing &amp; subscriptions · Customer thread (reply) · Commission · Audit trail</text>
+  <text x="54" y="226" class="s">Persona switcher (Rep / Manager / Finance / Admin) · alert bell</text>
+
+  <rect x="530" y="114" width="430" height="118" class="ui"/>
+  <text x="544" y="136" class="t">Backend Configuration (admin) &amp; Reporting</text>
+  <text x="544" y="156" class="e">Products (variants) · Pricelists (tier × currency) · Discount Governance</text>
+  <text x="544" y="174" class="e">Subscription plans · Upsell rules · Warehouses &amp; stock (reserved / free)</text>
+  <text x="544" y="192" class="e">Users &amp; RBAC · Settings &amp; policies · Commission rules · Audit log</text>
+  <text x="544" y="210" class="e">Deal-health dashboard (stalled · anomaly · slippage · backorder) · reports</text>
+  <text x="544" y="226" class="s">Filters: period / rep / approval / product / category · export PDF · XLS · CSV</text>
+
+  <rect x="980" y="114" width="580" height="118" class="portal"/>
+  <text x="994" y="136" class="t">Customer Portal — SEPARATE restricted surface</text>
+  <text x="994" y="156" class="e">Own cookie (df_portal) or per-quotation secure link (?k=token) · staff sessions rejected</text>
+  <text x="994" y="174" class="e">Sees only its own company's quotations · status: Sent / Under Negotiation / Confirmed</text>
+  <text x="994" y="192" class="e">Line-level questions &amp; change requests · counter-offer discount · one-click confirm</text>
+  <text x="994" y="210" class="e">Invoices (PDF) · recurring billing schedule · live thread with the salesperson</text>
+  <text x="994" y="226" class="s">Confirm → risk re-evaluated → re-enters approval automatically when terms breach ceilings</text>
+
+  <!-- arrows clients -> api -->
+  <path d="M275 232 V262" class="call"/>
+  <path d="M745 232 V262" class="call"/>
+  <path d="M1270 232 V262" class="call"/>
+  <text x="1290" y="252" class="s">JSON over HTTP · HttpOnly SameSite cookies</text>
+
+  <!-- ================= LANE 2: API ================= -->
+  <text x="40" y="282" class="lane">API — NODE.JS · EXPRESS 5 · ROLE-BASED ACCESS CONTROL (requireInternal · requireRole · requirePortal)</text>
+  <g>
+    <rect x="40" y="292" width="200" height="62" class="api"/><text x="52" y="312" class="t">/api/auth</text><text x="52" y="329" class="e">signup · login · me · users</text><text x="52" y="345" class="e">portal login · customers</text>
+    <rect x="252" y="292" width="215" height="62" class="api"/><text x="264" y="312" class="t">/api config</text><text x="264" y="329" class="e">products · variants · pricelists</text><text x="264" y="345" class="e">tiers · approval rules · warehouses · plans</text>
+    <rect x="479" y="292" width="230" height="62" class="api"/><text x="491" y="312" class="t">/api/quotations (sales)</text><text x="491" y="329" class="e">lines · discounts · upsell add / dismiss</text><text x="491" y="345" class="e">submit → route · approve · send · reply</text>
+    <rect x="721" y="292" width="230" height="62" class="api"/><text x="733" y="312" class="t">/api ops</text><text x="733" y="329" class="e">split · accept · override · ship</text><text x="733" y="345" class="e">consolidate · invoices · pay · subs</text>
+    <rect x="963" y="292" width="200" height="62" class="api"/><text x="975" y="312" class="t">/api/portal</text><text x="975" y="329" class="e">quotes · quote · comment · counter</text><text x="975" y="345" class="e">confirm · invoice PDF</text>
+    <rect x="1175" y="292" width="185" height="62" class="api"/><text x="1187" y="312" class="t">/api dashboard · reports</text><text x="1187" y="329" class="e">KPIs · alerts · nudge / escalate</text><text x="1187" y="345" class="e">filtered reports · export</text>
+    <rect x="1372" y="292" width="188" height="62" class="api"/><text x="1384" y="312" class="t">/api/commissions</text><text x="1384" y="329" class="e">rules · lifecycle · settlement</text><text x="1384" y="345" class="e">statements CSV / XLS / PDF</text>
+  </g>
+
+  <!-- arrows api -> engines -->
+  <path d="M800 354 V386" class="call"/>
+  <text x="812" y="376" class="s">every route delegates business rules to the engine layer (src/engines.js) — nothing is faked in the UI</text>
+
+  <!-- ================= LANE 3: ENGINES ================= -->
+  <text x="40" y="406" class="lane">BUSINESS-RULE ENGINES — PURE APPLICATION LOGIC, LIVE-CONFIGURABLE</text>
+  <g>
+    <rect x="40" y="416" width="186" height="104" class="eng"/>
+    <text x="52" y="436" class="t">Pricing</text>
+    <text x="52" y="454" class="e">base + variant extra</text>
+    <text x="52" y="470" class="e">plan recurring price</text>
+    <text x="52" y="486" class="e">tier × currency pricelist</text>
+    <text x="52" y="502" class="e">(discount or markup)</text>
+
+    <rect x="236" y="416" width="230" height="104" class="eng"/>
+    <text x="248" y="436" class="t">Blended Risk &amp; Approval Routing</text>
+    <text x="248" y="454" class="e">allowed = min(tier, category ceiling)</text>
+    <text x="248" y="470" class="e">violation = max(0, effective − allowed)</text>
+    <text x="248" y="486" class="e">risk = worst + ½ · Σ(other violations)</text>
+    <text x="248" y="502" class="e">rules → none / manager / + finance</text>
+
+    <rect x="476" y="416" width="200" height="104" class="eng"/>
+    <text x="488" y="436" class="t">Upsell / Cross-sell</text>
+    <text x="488" y="454" class="e">co-purchase score per trigger</text>
+    <text x="488" y="470" class="e">+0.15 promotion boost</text>
+    <text x="488" y="486" class="e">margin floor guard (setting)</text>
+    <text x="488" y="502" class="e">margin Δ + order margin after</text>
+
+    <rect x="686" y="416" width="230" height="104" class="eng"/>
+    <text x="698" y="436" class="t">Warehouse Split &amp; Backorders</text>
+    <text x="698" y="454" class="e">free = on-hand − reserved elsewhere</text>
+    <text x="698" y="470" class="e">greedy: reuse WH › most stock › freight</text>
+    <text x="698" y="486" class="e">remainder → backorder at cheapest depot</text>
+    <text x="698" y="502" class="e">restock → automatic "consolidate" prompt</text>
+
+    <rect x="926" y="416" width="220" height="104" class="eng"/>
+    <text x="938" y="436" class="t">Hybrid Billing &amp; Proration</text>
+    <text x="938" y="454" class="e">one-time invoice + recurring cycle 1</text>
+    <text x="938" y="470" class="e">12-month schedule per plan period</text>
+    <text x="938" y="486" class="e">Δqty × unit × days left ÷ cycle</text>
+    <text x="938" y="502" class="e">cancel → credit note (policy · notice)</text>
+
+    <rect x="1156" y="416" width="196" height="104" class="eng"/>
+    <text x="1168" y="436" class="t">Deal Health</text>
+    <text x="1168" y="454" class="e">stalled (inactivity &gt; N days)</text>
+    <text x="1168" y="470" class="e">discount anomaly vs rep baseline</text>
+    <text x="1168" y="486" class="e">slippage · backorder ready</text>
+    <text x="1168" y="502" class="e">nudge · escalate · dismiss</text>
+
+    <rect x="1362" y="416" width="198" height="104" class="eng"/>
+    <text x="1374" y="436" class="t">Commission &amp; Audit</text>
+    <text x="1374" y="454" class="e">on payment: most specific rule</text>
+    <text x="1374" y="470" class="e">product › category › rep › team</text>
+    <text x="1374" y="486" class="e">% · fixed · margin-tiered</text>
+    <text x="1374" y="502" class="e">audit_log on every state change</text>
+  </g>
+
+  <path d="M800 520 V552" class="call"/>
+  <text x="812" y="543" class="s">node-postgres pool · parameterised SQL · transactions for seeding · CHECK constraints on every status</text>
+
+  <!-- ================= LANE 4: DATA MODEL ================= -->
+  <text x="40" y="572" class="lane">DATA MODEL — POSTGRESQL (24 tables)</text>
+
+  <!-- group: identity -->
+  <rect x="40" y="582" width="250" height="150" class="grp"/><text x="52" y="598" class="grpt">IDENTITY &amp; ACCESS</text>
+  <rect x="52" y="606" width="226" height="34" class="ent"/><text x="60" y="620" class="t">users</text><text x="60" y="634" class="s">5 roles · sales_team · active</text>
+  <rect x="52" y="646" width="226" height="34" class="ent"/><text x="60" y="660" class="t">sessions</text><text x="60" y="674" class="s">token · user · expiry (staff &amp; portal)</text>
+  <rect x="52" y="686" width="226" height="34" class="ent"/><text x="60" y="700" class="t">customers</text><text x="60" y="714" class="s">tier · currency · address</text>
+
+  <!-- group: catalog -->
+  <rect x="306" y="582" width="290" height="150" class="grp"/><text x="318" y="598" class="grpt">CATALOG &amp; PRICING</text>
+  <rect x="318" y="606" width="128" height="34" class="ent"/><text x="326" y="620" class="t">categories</text><text x="326" y="634" class="s">discount_ceiling</text>
+  <rect x="456" y="606" width="128" height="34" class="ent"/><text x="464" y="620" class="t">products</text><text x="464" y="634" class="s">type · cost · tax</text>
+  <rect x="318" y="646" width="128" height="34" class="ent"/><text x="326" y="660" class="t">product_variants</text><text x="326" y="674" class="s">attr · value · extra</text>
+  <rect x="456" y="646" width="128" height="34" class="ent"/><text x="464" y="660" class="t">price_lists</text><text x="464" y="674" class="s">tier × currency · ±%</text>
+  <rect x="318" y="686" width="128" height="34" class="ent"/><text x="326" y="700" class="t">subscription_plans</text><text x="326" y="714" class="s">period · rules</text>
+  <rect x="456" y="686" width="128" height="34" class="ent"/><text x="464" y="700" class="t">product_plans</text><text x="464" y="714" class="s">&amp; upsell_rules</text>
+
+  <!-- group: governance + inventory -->
+  <rect x="612" y="582" width="230" height="150" class="grp"/><text x="624" y="598" class="grpt">GOVERNANCE · INVENTORY</text>
+  <rect x="624" y="606" width="206" height="34" class="ent"/><text x="632" y="620" class="t">discount_tiers · approval_rules</text><text x="632" y="634" class="s">ceilings · risk range → level · cap</text>
+  <rect x="624" y="646" width="206" height="34" class="ent"/><text x="632" y="660" class="t">warehouses</text><text x="632" y="674" class="s">code · shipping_cost_weight</text>
+  <rect x="624" y="686" width="206" height="34" class="ent"/><text x="632" y="700" class="t">stock_levels</text><text x="632" y="714" class="s">qty · reorder_point · replenish_qty</text>
+
+  <!-- group: deal core -->
+  <rect x="858" y="582" width="290" height="150" class="grp"/><text x="870" y="598" class="grpt">DEAL CORE</text>
+  <rect x="870" y="606" width="266" height="34" class="ent" style="stroke:#714B67;stroke-width:2"/><text x="878" y="620" class="t">quotations</text><text x="878" y="634" class="s">status · totals · margin · risk · approval level</text>
+  <rect x="870" y="646" width="128" height="34" class="ent"/><text x="878" y="660" class="t">quotation_lines</text><text x="878" y="674" class="s">qty · price · disc%</text>
+  <rect x="1008" y="646" width="128" height="34" class="ent"/><text x="1016" y="660" class="t">approvals</text><text x="1016" y="674" class="s">level · seq · status</text>
+  <rect x="870" y="686" width="266" height="34" class="ent"/><text x="878" y="700" class="t">negotiations · alerts</text><text x="878" y="714" class="s">Q&amp;A · change requests · counters · 4 alert kinds</text>
+
+  <!-- group: fulfillment + billing -->
+  <rect x="1164" y="582" width="230" height="150" class="grp"/><text x="1176" y="598" class="grpt">FULFILLMENT · BILLING</text>
+  <rect x="1176" y="606" width="206" height="34" class="ent"/><text x="1184" y="620" class="t">fulfillment_splits</text><text x="1184" y="634" class="s">line × warehouse · qty · status</text>
+  <rect x="1176" y="646" width="206" height="34" class="ent"/><text x="1184" y="660" class="t">invoices · payments</text><text x="1184" y="674" class="s">one_time · recurring · credit_note</text>
+  <rect x="1176" y="686" width="206" height="34" class="ent"/><text x="1184" y="700" class="t">billing_schedule</text><text x="1184" y="714" class="s">cycle date · amount · status</text>
+
+  <!-- group: commissions + system -->
+  <rect x="1410" y="582" width="150" height="150" class="grp"/><text x="1422" y="598" class="grpt">COMMISSION · SYSTEM</text>
+  <rect x="1422" y="606" width="126" height="34" class="ent"/><text x="1430" y="620" class="t">commission_rules</text><text x="1430" y="634" class="s">scope · rate · tiers</text>
+  <rect x="1422" y="646" width="126" height="34" class="ent"/><text x="1430" y="660" class="t">commissions</text><text x="1430" y="674" class="s">lifecycle · amount</text>
+  <rect x="1422" y="686" width="126" height="34" class="ent"/><text x="1430" y="700" class="t">audit_log</text><text x="1430" y="714" class="s">+ settings (thresholds)</text>
+
+  <!-- key relationships -->
+  <path d="M278 703 H340 V740 H1000 V722" class="rel"/>
+  <path d="M1136 623 H1176" class="rel"/>
+  <path d="M1136 703 H1176" class="rel"/>
+  <path d="M1382 663 H1422" class="rel"/>
+  <text x="560" y="754" class="s" text-anchor="middle">customers 1—n quotations (rep = users.id) · quotation_lines n—1 products · plan n—1 subscription_plans</text>
+  <text x="1240" y="754" class="s" text-anchor="middle">quotations → invoices → payments → commissions · lines → fulfillment_splits · lines → billing_schedule</text>
+
+  <!-- ================= LANE 5: END-TO-END FLOW ================= -->
+  <text x="40" y="792" class="lane">END-TO-END FLOW — WHAT THE ENGINES DO AT EACH STEP</text>
+  <g>
+    <g transform="translate(40 804)">
+      <rect width="176" height="96" class="box"/><circle cx="18" cy="18" r="11" fill="#714B67"/><text x="18" y="22" class="num" text-anchor="middle">1</text>
+      <text x="36" y="22" class="t">Build quotation</text>
+      <text x="10" y="44" class="flow">Rep adds lines; pricelist by</text>
+      <text x="10" y="60" class="flow">tier &amp; currency; each line</text>
+      <text x="10" y="76" class="flow">shows ceiling + violation;</text>
+      <text x="10" y="92" class="flow">margin &amp; upsell update live.</text>
+    </g>
+    <path d="M216 852 H230" class="call"/>
+    <g transform="translate(232 804)">
+      <rect width="176" height="96" class="box"/><circle cx="18" cy="18" r="11" fill="#714B67"/><text x="18" y="22" class="num" text-anchor="middle">2</text>
+      <text x="36" y="22" class="t">Submit → auto-route</text>
+      <text x="10" y="44" class="flow">Blended risk computed;</text>
+      <text x="10" y="60" class="flow">approval rules pick none /</text>
+      <text x="10" y="76" class="flow">Manager / Manager→Finance.</text>
+      <text x="10" y="92" class="flow">Chain + audit entry created.</text>
+    </g>
+    <path d="M408 852 H422" class="call"/>
+    <g transform="translate(424 804)">
+      <rect width="176" height="96" class="box"/><circle cx="18" cy="18" r="11" fill="#714B67"/><text x="18" y="22" class="num" text-anchor="middle">3</text>
+      <text x="36" y="22" class="t">Review &amp; approve</text>
+      <text x="10" y="44" class="flow">Role-gated: manager first,</text>
+      <text x="10" y="60" class="flow">finance when required.</text>
+      <text x="10" y="76" class="flow">Reasons logged; a return</text>
+      <text x="10" y="92" class="flow">unlocks the builder.</text>
+    </g>
+    <path d="M600 852 H614" class="call"/>
+    <g transform="translate(616 804)">
+      <rect width="176" height="96" class="box"/><circle cx="18" cy="18" r="11" fill="#B3611E"/><text x="18" y="22" class="num" text-anchor="middle">4</text>
+      <text x="36" y="22" class="t">Portal negotiation</text>
+      <text x="10" y="44" class="flow">Customer signs in or opens</text>
+      <text x="10" y="60" class="flow">a secure link: line-level</text>
+      <text x="10" y="76" class="flow">questions, counter, confirm.</text>
+      <text x="10" y="92" class="flow">Over ceilings → back to 2.</text>
+    </g>
+    <path d="M792 852 H806" class="call"/>
+    <g transform="translate(808 804)">
+      <rect width="176" height="96" class="box"/><circle cx="18" cy="18" r="11" fill="#714B67"/><text x="18" y="22" class="num" text-anchor="middle">5</text>
+      <text x="36" y="22" class="t">Warehouse split</text>
+      <text x="10" y="44" class="flow">Free stock only; fewest</text>
+      <text x="10" y="60" class="flow">shipments; accept or</text>
+      <text x="10" y="76" class="flow">override; remainder back-</text>
+      <text x="10" y="92" class="flow">ordered; restock → prompt.</text>
+    </g>
+    <path d="M984 852 H998" class="call"/>
+    <g transform="translate(1000 804)">
+      <rect width="176" height="96" class="box"/><circle cx="18" cy="18" r="11" fill="#714B67"/><text x="18" y="22" class="num" text-anchor="middle">6</text>
+      <text x="36" y="22" class="t">Hybrid billing</text>
+      <text x="10" y="44" class="flow">One-time invoice + cycle-1</text>
+      <text x="10" y="60" class="flow">invoice + 12-mo schedule.</text>
+      <text x="10" y="76" class="flow">Qty change → proration per</text>
+      <text x="10" y="92" class="flow">plan; cancel → credit note.</text>
+    </g>
+    <path d="M1176 852 H1190" class="call"/>
+    <g transform="translate(1192 804)">
+      <rect width="176" height="96" class="box"/><circle cx="18" cy="18" r="11" fill="#714B67"/><text x="18" y="22" class="num" text-anchor="middle">7</text>
+      <text x="36" y="22" class="t">Pay → commission</text>
+      <text x="10" y="44" class="flow">Payment → invoice PAID →</text>
+      <text x="10" y="60" class="flow">most specific commission</text>
+      <text x="10" y="76" class="flow">rule fires → draft →</text>
+      <text x="10" y="92" class="flow">approve → settle.</text>
+    </g>
+    <path d="M1368 852 H1382" class="call"/>
+    <g transform="translate(1384 804)">
+      <rect width="176" height="96" class="box"/><circle cx="18" cy="18" r="11" fill="#017E84"/><text x="18" y="22" class="num" text-anchor="middle">8</text>
+      <text x="36" y="22" class="t">Monitor &amp; report</text>
+      <text x="10" y="44" class="flow">Alerts: stalled, anomaly,</text>
+      <text x="10" y="60" class="flow">slippage, backorder →</text>
+      <text x="10" y="76" class="flow">nudge / escalate; reports</text>
+      <text x="10" y="92" class="flow">→ PDF / XLS / CSV.</text>
+    </g>
+  </g>
+  <!-- loop back arrow (portal -> approval) -->
+  <path d="M704 900 V918 H320 V900" class="call" style="stroke-dasharray:5 4"/>
+  <text x="512" y="932" class="s" text-anchor="middle">negotiated terms breach ceilings → automatic re-approval (same engine, same audit trail)</text>
+
+  <!-- ================= FOOTER: guarantees ================= -->
+  <rect x="40" y="958" width="1520" height="140" class="box"/>
+  <text x="56" y="982" class="t">Design guarantees</text>
+  <text x="56" y="1004" class="e">• Self-governing: risk scores route work, customer confirmations re-enter approval, backorder prompts and commissions fire from state changes — never from a button that "pretends".</text>
+  <text x="56" y="1024" class="e">• One rule engine, many entry points: builder edits, portal counters, rep acceptances and admin ceiling changes all hit the same computeRisk → requiredApprovalLevel → routeForApproval path.</text>
+  <text x="56" y="1044" class="e">• Inventory reality: split and consolidation only ever promise free stock (on-hand − planned by other orders); stock decrements when a shipment leaves; restock re-evaluates every open backorder.</text>
+  <text x="56" y="1064" class="e">• Tenant isolation: the portal is a distinct auth surface (own cookie or per-quotation token); customers can only read their own company's rows — verified by the automated suite.</text>
+  <text x="56" y="1084" class="e">• Everything configurable live (ceilings, approval ranges, plans, upsell rules, thresholds) · full audit trail · 102 automated HTTP end-to-end checks cover the official 8-step flow and the edge cases above.</text>
+</svg>

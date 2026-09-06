@@ -3,7 +3,7 @@
 const express = require('express');
 const { Q, ONE, RUN, getSetting, setSetting } = require('../db');
 const { requireRole, requireInternal } = require('../util');
-const { audit, unitPriceFor } = require('../engines');
+const { audit, unitPriceFor, runReplenishment, refreshAlerts } = require('../engines');
 
 const r = express.Router();
 
@@ -137,9 +137,21 @@ r.delete('/approval-rules/:id', requireRole('admin'), async (req, res) => { awai
 /* ---- warehouses & stock ---- */
 r.get('/warehouses', requireInternal, async (_q, res) => {
   const warehouses = await Q('SELECT * FROM warehouses ORDER BY name');
-  const stock = await Q(`SELECT s.*, p.name product_name, p.sku, w.name warehouse_name FROM stock_levels s
-    JOIN products p ON p.id=s.product_id JOIN warehouses w ON w.id=s.warehouse_id WHERE p.active ORDER BY p.name`);
-  res.json({ warehouses, stock });
+  const stock = await Q(`SELECT s.*, p.name product_name, p.sku, w.name warehouse_name,
+      COALESCE((SELECT SUM(fs.qty) FROM fulfillment_splits fs JOIN quotation_lines l ON l.id=fs.line_id
+        WHERE fs.warehouse_id=s.warehouse_id AND l.product_id=s.product_id AND fs.status='planned'),0) reserved
+    FROM stock_levels s JOIN products p ON p.id=s.product_id JOIN warehouses w ON w.id=s.warehouse_id WHERE p.active ORDER BY p.name`);
+  for (const s of stock) { s.reserved = Number(s.reserved); s.free = Math.max(0, s.qty - s.reserved); }
+  const backorders = await Q(`SELECT fs.warehouse_id, l.product_id, SUM(fs.qty) qty, COUNT(DISTINCT fs.quotation_id) orders
+    FROM fulfillment_splits fs JOIN quotation_lines l ON l.id=fs.line_id WHERE fs.status='backorder' GROUP BY fs.warehouse_id, l.product_id`);
+  res.json({ warehouses, stock, backorders });
+});
+/* apply replenishment rules (all warehouses, or one) — stock at/below its reorder point receives its replenishment lot */
+r.post('/warehouses/replenish', requireRole('admin', 'finance'), async (req, res) => {
+  const applied = await runReplenishment(req.body?.warehouse_id ? Number(req.body.warehouse_id) : null);
+  for (const a of applied) await audit('stock', a.stock_id, req.user, 'replenished', `${a.product} @ ${a.warehouse}: ${a.from} → ${a.to} (+${a.added}, reorder rule)`);
+  await refreshAlerts(true); // surfaces "consolidate remaining backorder" prompts immediately
+  res.json({ applied });
 });
 r.post('/warehouses', requireRole('admin', 'finance'), async (req, res) => {
   const { name, code, shipping_cost_weight, address } = req.body || {};
@@ -160,9 +172,13 @@ r.post('/warehouses/:id/restock', requireRole('admin', 'finance'), async (req, r
   const { product_id, qty } = req.body || {};
   if (!product_id || !qty) return res.status(400).json({ error: 'product_id and qty required' });
   await RUN(`INSERT INTO stock_levels(warehouse_id,product_id,qty) VALUES(?,?,?)
-    ON CONFLICT(warehouse_id,product_id) DO UPDATE SET qty = qty + excluded.qty`, [req.params.id, product_id, qty]);
-  await audit('stock', Number(req.params.id), req.user, 'restock', `+${qty} units of product ${product_id}`);
-  res.json({ ok: true });
+    ON CONFLICT(warehouse_id,product_id) DO UPDATE SET qty = stock_levels.qty + excluded.qty`, [req.params.id, product_id, qty]);
+  const p = await ONE('SELECT name FROM products WHERE id=?', [product_id]);
+  const w = await ONE('SELECT name FROM warehouses WHERE id=?', [Number(req.params.id)]);
+  await audit('stock', Number(req.params.id), req.user, 'restock', `+${qty} × ${p ? p.name : `product ${product_id}`} → ${w ? w.name : 'warehouse'}`);
+  await refreshAlerts(true); // stock arrived mid-fulfillment → "consolidate remaining backorder" prompt appears automatically
+  const prompts = await Q(`SELECT a.quotation_id, q.number FROM alerts a JOIN quotations q ON q.id=a.quotation_id WHERE a.kind='backorder' AND a.status!='dismissed'`);
+  res.json({ ok: true, backorder_prompts: prompts });
 });
 r.put('/stock/:id', requireRole('admin', 'finance'), async (req, res) => {
   const { qty, reorder_point, replenishment_qty } = req.body || {};
@@ -232,6 +248,15 @@ r.put('/settings', requireRole('admin'), async (req, res) => {
   for (const [k, v] of Object.entries(req.body || {})) await setSetting(k, v);
   await audit('settings', 0, req.user, 'updated', Object.keys(req.body || {}).join(', '));
   res.json({ ok: true });
+});
+
+/* ---- demo data reset (admin) — drops and reseeds the deterministic dataset; every session is invalidated ---- */
+r.post('/admin/reset-demo', requireRole('admin'), async (req, res) => {
+  const { pool, init } = require('../db');
+  console.log(`  [db] demo reset requested by ${req.user.name}`);
+  await pool.query('DROP SCHEMA public CASCADE; CREATE SCHEMA public;');
+  await init();
+  res.json({ ok: true, message: 'Demo data reset — sign in again' });
 });
 
 /* ---- audit log ---- */

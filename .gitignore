@@ -1,4 +1,17 @@
-// update iteration 5
-// update iteration 15
-// update iteration 25
-// update iteration 35
+node_modules/
+client/node_modules/
+client/dist/
+data/
+*.log
+.tools/
+cookies.txt
+c.txt
+pg_hba.conf.bak
+.env
+# local-only prep docs and regenerated lockfiles (kept on disk, not for submission)
+INTERVIEW_PREP.md
+DEEP_DIVE.md
+PITCH.md
+package-lock.json
+client/package-lock.json
+nohup.out

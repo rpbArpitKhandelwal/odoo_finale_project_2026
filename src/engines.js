@@ -7,7 +7,7 @@ const { Q, ONE, RUN, getSetting, NOW_ISO, TODAY } = require('./db');
 async function tierPriceRule(tier, currency) {
   return ONE(`SELECT * FROM price_lists WHERE active AND customer_tier=? AND currency=? ORDER BY value DESC`, [tier, currency]);
 }
-async function unitPriceFor(productId, variantId, customer) {
+async function unitPriceFor(productId, variantId, customer, planId) {
   const p = await ONE('SELECT * FROM products WHERE id=?', [productId]);
   if (!p) return 0;
   let price = p.base_price;
@@ -16,7 +16,9 @@ async function unitPriceFor(productId, variantId, customer) {
     if (v) price += v.extra_price;
   }
   if (p.product_type === 'subscription') {
-    const pp = await ONE('SELECT * FROM product_plans WHERE product_id=? ORDER BY id LIMIT 1', [productId]);
+    const pp = planId
+      ? await ONE('SELECT * FROM product_plans WHERE product_id=? AND plan_id=?', [productId, planId])
+      : await ONE('SELECT * FROM product_plans WHERE product_id=? ORDER BY id LIMIT 1', [productId]);
     if (pp) price = pp.recurring_price;
   }
   const rule = await tierPriceRule(customer.tier, customer.currency);
@@ -72,14 +74,15 @@ async function computeRisk(quotation) {
 async function requiredApprovalLevel(quotation) {
   const risk = await computeRisk(quotation);
   const rules = await Q('SELECT * FROM approval_rules WHERE active ORDER BY sequence DESC');
-  let level = 'none';
+  let level = null;
   if (risk.risk_score <= 0) return { level: 'none', risk };
   for (const r of rules) {
     const inRange = risk.risk_score >= r.risk_min && risk.risk_score <= r.risk_max;
     const hardCapHit = r.any_line_over != null && risk.max_line_discount > r.any_line_over;
     if (inRange || hardCapHit) { level = r.level; break; }
   }
-  return { level, risk };
+  // any ceiling violation must be reviewed: if the configured ranges leave a gap, the Sales Manager is the safe default
+  return { level: level || 'manager', risk };
 }
 
 /* ============ 3. TOTALS / MARGIN ============ */
@@ -157,6 +160,18 @@ async function upsellSuggestions(quotationId) {
  *  per line, prefer warehouses already used by this order (consolidation), then largest availability,
  *  then lower shipping cost weight. Remainder becomes a backorder parked at the cheapest warehouse.
  */
+/* Units of a product a warehouse can still promise: on-hand minus what other confirmed orders have already
+ * planned (but not yet shipped) from that warehouse. Two orders can never be promised the same unit. */
+async function reservedQty(warehouseId, productId, excludeQuotationId) {
+  const row = await ONE(`SELECT COALESCE(SUM(fs.qty),0) r FROM fulfillment_splits fs JOIN quotation_lines l ON l.id=fs.line_id
+    WHERE fs.warehouse_id=? AND l.product_id=? AND fs.status='planned' AND fs.quotation_id!=?`, [warehouseId, productId, excludeQuotationId || 0]);
+  return row ? Number(row.r) : 0;
+}
+async function freeStock(warehouseId, productId, excludeQuotationId) {
+  const row = await ONE('SELECT qty FROM stock_levels WHERE warehouse_id=? AND product_id=?', [warehouseId, productId]);
+  const onHand = row ? row.qty : 0;
+  return Math.max(0, onHand - await reservedQty(warehouseId, productId, excludeQuotationId));
+}
 async function suggestSplit(quotationId) {
   const lines = await Q(`SELECT l.*, p.stocked, p.name FROM quotation_lines l JOIN products p ON p.id=l.product_id
     WHERE l.quotation_id=? AND p.stocked AND l.line_type='one_time'`, [quotationId]);
@@ -166,9 +181,9 @@ async function suggestSplit(quotationId) {
   const plan = []; let shipments = 0; let estCost = 0;
   const committed = {}; // "wh:product" -> qty already earmarked by this plan (so two lines don't double-count the same stock)
   const availability = async (wid, pid) => {
-    const row = await ONE('SELECT qty FROM stock_levels WHERE warehouse_id=? AND product_id=?', [wid, pid]);
+    const free = await freeStock(wid, pid, quotationId);
     const taken = committed[`${wid}:${pid}`] || 0;
-    return (row ? row.qty : 0) - taken;
+    return free - taken;
   };
   for (const l of lines) {
     let remaining = l.qty;
@@ -206,10 +221,35 @@ async function canConsolidate(quotationId) {
   const rows = await Q(`SELECT fs.*, l.product_id FROM fulfillment_splits fs JOIN quotation_lines l ON l.id=fs.line_id
     WHERE fs.quotation_id=? AND fs.status='backorder'`, [quotationId]);
   for (const r of rows) {
-    const whs = await Q('SELECT warehouse_id, qty FROM stock_levels WHERE product_id=? AND qty>0', [r.product_id]);
-    if (whs.length) return true;
+    const whs = await Q('SELECT warehouse_id FROM stock_levels WHERE product_id=? AND qty>0', [r.product_id]);
+    // consolidation adds on top of existing planned rows, so this order's own reservations count too (exclude nothing)
+    for (const w of whs) if (await freeStock(w.warehouse_id, r.product_id, null) > 0) return true;
   }
   return false;
+}
+/* Move backordered units into planned shipments wherever free stock now exists (largest free pool first). */
+async function consolidateBackorders(quotationId) {
+  const backs = await Q(`SELECT fs.*, l.product_id, l.description FROM fulfillment_splits fs
+    JOIN quotation_lines l ON l.id=fs.line_id WHERE fs.quotation_id=? AND fs.status='backorder'`, [quotationId]);
+  let moved = 0;
+  for (const b of backs) {
+    let remaining = b.qty;
+    const whs = await Q(`SELECT s.warehouse_id, s.qty, w.shipping_cost_weight FROM stock_levels s JOIN warehouses w ON w.id=s.warehouse_id
+      WHERE s.product_id=? AND s.qty>0 AND w.active`, [b.product_id]);
+    const pools = [];
+    for (const w of whs) pools.push({ ...w, free: await freeStock(w.warehouse_id, b.product_id, null) });
+    pools.sort((a, b2) => b2.free - a.free || a.shipping_cost_weight - b2.shipping_cost_weight);
+    for (const p of pools) {
+      if (remaining <= 0 || p.free <= 0) continue;
+      const take = Math.min(p.free, remaining);
+      await RUN(`INSERT INTO fulfillment_splits(quotation_id,line_id,warehouse_id,qty,status,est_cost) VALUES(?,?,?,?,'planned',0)`,
+        [quotationId, b.line_id, p.warehouse_id, take]);
+      remaining -= take; moved += take;
+    }
+    if (remaining === 0) await RUN(`DELETE FROM fulfillment_splits WHERE id=?`, [b.id]);
+    else await RUN(`UPDATE fulfillment_splits SET qty=? WHERE id=?`, [remaining, b.id]);
+  }
+  return moved;
 }
 
 /* ============ 6. BILLING / SUBSCRIPTION ENGINE ============ */
@@ -222,7 +262,24 @@ async function nextInvoiceNumber() {
   const n = row ? parseInt(row.number.slice(4), 10) + 1 : 2033;
   return `INV-${n}`;
 }
-/* On confirmation: one-time lines → single invoice; recurring lines → first-cycle invoice + future schedule. */
+/* Per-unit recurring price for a line: list price − effective discount + product tax (recurring invoices are tax-inclusive, like one-time ones). */
+async function recurringUnitPrice(line, orderDiscountPct) {
+  const prod = await ONE('SELECT tax_rate FROM products WHERE id=?', [line.product_id]);
+  const taxRate = (prod && prod.tax_rate) || 0;
+  return line.unit_price * (1 - effectiveDiscount(line.discount_pct, orderDiscountPct || 0) / 100) * (1 + taxRate / 100);
+}
+/* Current billing cycle of a subscription line, anchored on the last invoiced schedule entry (not on "today"). */
+async function currentCycle(line) {
+  const months = periodMonths(line.billing_period || 'monthly');
+  const last = await ONE(`SELECT scheduled_date FROM billing_schedule WHERE line_id=? AND status='invoiced' ORDER BY scheduled_date DESC LIMIT 1`, [line.id]);
+  const start = last ? new Date(`${last.scheduled_date}T00:00:00Z`) : new Date();
+  const end = periodAddMonths(start, months);
+  const now = new Date();
+  const daysInCycle = Math.max(1, Math.round((end - start) / 86400000));
+  const daysRemaining = Math.max(0, Math.min(daysInCycle, Math.ceil((end - now) / 86400000)));
+  return { start: start.toISOString().slice(0, 10), end: end.toISOString().slice(0, 10), days_in_cycle: daysInCycle, days_remaining: daysRemaining, months };
+}
+/* On confirmation: one-time lines → single invoice; recurring lines → first-cycle invoice + a 12-month forward schedule. */
 async function generateBillingOnConfirm(quotationId) {
   const q = await ONE('SELECT * FROM quotations WHERE id=?', [quotationId]);
   if (!q) return;
@@ -243,57 +300,60 @@ async function generateBillingOnConfirm(quotationId) {
       [await nextInvoiceNumber(), quotationId, q.customer_id, 'one_time', r2(oneTimeNet + oneTimeTax), 'open', now.slice(0, 10)]);
   }
   for (const l of lines.filter(l => l.line_type === 'subscription')) {
-    const net = l.qty * l.unit_price * (1 - effectiveDiscount(l.discount_pct, od) / 100);
+    const cycleAmount = r2(l.qty * await recurringUnitPrice(l, od));
     const inv = await RUN('INSERT INTO invoices(number,quotation_id,customer_id,kind,amount,status,due_date) VALUES(?,?,?,?,?,?,?)',
-      [await nextInvoiceNumber(), quotationId, q.customer_id, 'recurring', r2(net), 'open', now.slice(0, 10)]);
+      [await nextInvoiceNumber(), quotationId, q.customer_id, 'recurring', cycleAmount, 'open', now.slice(0, 10)]);
     await RUN(`INSERT INTO billing_schedule(quotation_id,line_id,scheduled_date,description,amount,status,invoice_id)
-      VALUES(?,?,?,?,?,?,?)`, [quotationId, l.id, now.slice(0, 10), `${l.description} — cycle 1`, r2(net), 'invoiced', inv.lastInsertRowid]);
+      VALUES(?,?,?,?,?,?,?)`, [quotationId, l.id, now.slice(0, 10), `${l.description} — cycle 1`, cycleAmount, 'invoiced', inv.lastInsertRowid]);
     const months = periodMonths(l.billing_period || 'monthly');
-    for (let i = 1; i <= 11; i++) {
+    const futureCycles = Math.max(1, Math.round(12 / months) - 1); // 12-month horizon, always at least the next renewal
+    for (let i = 1; i <= futureCycles; i++) {
       const d = periodAddMonths(now, months * i).toISOString().slice(0, 10);
       await RUN(`INSERT INTO billing_schedule(quotation_id,line_id,scheduled_date,description,amount,status,invoice_id)
-        VALUES(?,?,?,?,?,?,?)`, [quotationId, l.id, d, `${l.description} — cycle ${i + 1}`, r2(net), 'scheduled', null]);
+        VALUES(?,?,?,?,?,?,?)`, [quotationId, l.id, d, `${l.description} — cycle ${i + 1}`, cycleAmount, 'scheduled', null]);
     }
   }
 }
-/* Mid-cycle quantity change → daily proration credit/charge for the remainder of the current cycle. */
+/* Mid-cycle quantity change → proration for the remainder of the CURRENT cycle, per the plan's proration rule.
+ *   daily → charge/credit (Δqty × unit price) × days_remaining / days_in_cycle, invoiced immediately
+ *   none  → no adjustment now; the new quantity simply applies from the next cycle */
 async function prorateLineChange(line, newQty) {
   const q = await ONE('SELECT * FROM quotations WHERE id=?', [line.quotation_id]);
-  const months = periodMonths(line.billing_period || 'monthly');
-  const cycleEnd = periodAddMonths(new Date(), months); // current cycle boundary (approx from today for demo)
-  const daysInCycle = Math.max(1, Math.round((cycleEnd - new Date()) / 86400000) + 30);
-  const daysRemaining = Math.max(0, Math.round((cycleEnd - new Date()) / 86400000));
-  if (daysRemaining <= 0) return null;
-  const od = q.order_discount_pct || 0;
-  const price = line.unit_price * (1 - effectiveDiscount(line.discount_pct, od) / 100);
-  const delta = (newQty - line.qty) * price * (daysRemaining / Math.max(1, daysInCycle));
-  return { delta: r2(delta), days_remaining: daysRemaining, days_in_cycle: daysInCycle };
+  const plan = line.plan_id ? await ONE('SELECT * FROM subscription_plans WHERE id=?', [line.plan_id]) : null;
+  const rule = plan ? plan.proration_rule : 'daily';
+  const cycle = await currentCycle(line);
+  const unit = await recurringUnitPrice(line, q.order_discount_pct);
+  if (rule === 'none') return { delta: 0, rule, ...cycle, unit_price: r2(unit) };
+  if (cycle.days_remaining <= 0) return { delta: 0, rule, ...cycle, unit_price: r2(unit) };
+  const delta = (newQty - line.qty) * unit * (cycle.days_remaining / cycle.days_in_cycle);
+  return { delta: r2(delta), rule, ...cycle, unit_price: r2(unit) };
 }
-/* Cancel subscription → credit note per plan policy. */
+/* Cancel subscription → credit note per plan policy (prorated / % of unused / none), honouring the plan's notice period. */
 async function cancelSubscriptionCredit(line) {
   const q = await ONE('SELECT * FROM quotations WHERE id=?', [line.quotation_id]);
   const plan = line.plan_id ? await ONE('SELECT * FROM subscription_plans WHERE id=?', [line.plan_id]) : null;
-  const od = q.order_discount_pct || 0;
-  const net = line.qty * line.unit_price * (1 - effectiveDiscount(line.discount_pct, od) / 100);
-  let refund = 0, policy = 'none';
+  const cycleAmount = line.qty * await recurringUnitPrice(line, q.order_discount_pct);
+  const cycle = await currentCycle(line);
+  let refund = 0, policy = 'none', noticeDays = 0;
   if (plan) {
     policy = plan.cancellation_policy;
-    const months = periodMonths(plan.billing_period);
-    const cycleEnd = periodAddMonths(new Date(), months);
-    const daysRemaining = Math.max(0, Math.round((cycleEnd - new Date()) / 86400000));
-    const daysInCycle = 30 * months;
-    if (policy === 'refund_prorated') refund = net * daysRemaining / daysInCycle;
-    else if (policy === 'refund_pct') refund = net * plan.refund_pct / 100 * daysRemaining / daysInCycle;
+    noticeDays = plan.notice_days || 0;
+    const unusedDays = Math.max(0, cycle.days_remaining - noticeDays); // service continues through the notice period
+    const unusedShare = unusedDays / cycle.days_in_cycle;
+    if (policy === 'refund_prorated') refund = cycleAmount * unusedShare;
+    else if (policy === 'refund_pct') refund = cycleAmount * (plan.refund_pct / 100) * unusedShare;
   }
-  return { refund: r2(refund), policy };
+  return { refund: r2(refund), policy, notice_days: noticeDays, ...cycle };
 }
+/* Recurring billing run: every scheduled cycle whose date has arrived becomes an open invoice (one quotation, or all). */
 async function generateDueInvoices(quotationId) {
-  const due = await Q(`SELECT * FROM billing_schedule WHERE quotation_id=? AND status='scheduled' AND scheduled_date<=${TODAY}`, [quotationId]);
-  const q = await ONE('SELECT * FROM quotations WHERE id=?', [quotationId]);
+  const due = quotationId
+    ? await Q(`SELECT bs.*, q.customer_id FROM billing_schedule bs JOIN quotations q ON q.id=bs.quotation_id WHERE bs.quotation_id=? AND bs.status='scheduled' AND bs.scheduled_date<=${TODAY} ORDER BY bs.scheduled_date, bs.id`, [quotationId])
+    : await Q(`SELECT bs.*, q.customer_id FROM billing_schedule bs JOIN quotations q ON q.id=bs.quotation_id WHERE bs.status='scheduled' AND bs.scheduled_date<=${TODAY} AND q.status IN ('confirmed','fulfilling','fulfilled') ORDER BY bs.scheduled_date, bs.id`);
   let created = 0;
   for (const s of due) {
     const inv = await RUN('INSERT INTO invoices(number,quotation_id,customer_id,kind,amount,status,due_date) VALUES(?,?,?,?,?,?,?)',
-      [await nextInvoiceNumber(), quotationId, q.customer_id, 'recurring', s.amount, 'open', s.scheduled_date]);
+      [await nextInvoiceNumber(), s.quotation_id, s.customer_id, 'recurring', s.amount, 'open', s.scheduled_date]);
     await RUN(`UPDATE billing_schedule SET status='invoiced', invoice_id=? WHERE id=?`, [inv.lastInsertRowid, s.id]);
     created++;
   }
@@ -301,8 +361,17 @@ async function generateDueInvoices(quotationId) {
 }
 
 /* ============ 7. DEAL HEALTH ENGINE ============ */
-/* Idempotently materializes stalled / anomaly / slippage alerts. */
-async function refreshAlerts() {
+/* Idempotently materializes stalled / anomaly / slippage / backorder alerts.
+ * Throttled: the dashboard and the notification bell poll this constantly, so a full re-scan runs at most every
+ * 15 s unless a state change (restock, replenishment) forces it. */
+let alertsRefreshedAt = 0, alertsInFlight = null;
+async function refreshAlerts(force = false) {
+  if (!force && Date.now() - alertsRefreshedAt < 15000) return;
+  if (alertsInFlight) return alertsInFlight;
+  alertsInFlight = refreshAlertsNow().finally(() => { alertsRefreshedAt = Date.now(); alertsInFlight = null; });
+  return alertsInFlight;
+}
+async function refreshAlertsNow() {
   const stalledDays = parseInt(await getSetting('stalled_days', 3));
   const anomalyMult = parseFloat(await getSetting('anomaly_multiplier', 1.5));
   const slipDays = parseInt(await getSetting('slippage_days', 2));
@@ -316,25 +385,57 @@ async function refreshAlerts() {
     const days = Math.floor((Date.now() - new Date(q.last_activity_at).getTime()) / 86400000);
     await RUN(insAlert, ['stalled', q.id, `${q.number} (${q.customer_name}) inactive for ${days} days — status: ${q.status}`, 'medium']);
   }
-  // anomaly: confirmed quote whose avg discount far exceeds the rep's own historical average
+  // anomaly: a quote whose avg discount far exceeds the rep's own historical (confirmed) average.
+  // Material = over the multiplier AND ≥ 5 points above baseline; only deals won in the last 45 days are actionable.
+  const ANOMALY_MIN_GAP = 5, ANOMALY_WINDOW_DAYS = 45;
   const quotes = await Q(`SELECT q.*, c.name customer_name FROM quotations q JOIN customers c ON c.id=q.customer_id
-    WHERE q.status IN ('confirmed','fulfilled')`);
+    WHERE q.status IN ('confirmed','fulfilling','fulfilled')`);
   const byRep = {};
   for (const q of quotes) {
     const avgDisc = q.subtotal > 0 ? q.discount_total / q.subtotal * 100 : 0;
     (byRep[q.rep_id] = byRep[q.rep_id] || []).push({ q, avgDisc: r1(avgDisc) });
   }
+  const windowStart = new Date(Date.now() - ANOMALY_WINDOW_DAYS * 86400000).toISOString();
   for (const [repId, arr] of Object.entries(byRep)) {
     if (arr.length < 3) continue; // need a baseline before flagging
     const sorted = [...arr].sort((a, b) => a.q.confirmed_at?.localeCompare(b.q.confirmed_at || '') || 0);
     for (let i = 1; i < sorted.length; i++) {
+      if ((sorted[i].q.confirmed_at || '') < windowStart) continue;
       const baseline = sorted.slice(0, i).reduce((s, x) => s + x.avgDisc, 0) / i;
-      if (baseline > 0 && sorted[i].avgDisc > baseline * anomalyMult) {
+      if (baseline > 0 && sorted[i].avgDisc > baseline * anomalyMult && sorted[i].avgDisc - baseline >= ANOMALY_MIN_GAP) {
         await RUN(insAlert, ['anomaly', sorted[i].q.id,
           `${sorted[i].q.number} (${sorted[i].q.customer_name}): ${sorted[i].avgDisc}% avg discount vs rep baseline ${r1(baseline)}% (×${anomalyMult})`, 'high']);
       }
     }
+    // early warning: live (not yet won) quotes by the same rep that already breach the baseline pattern
+    const baseline = arr.reduce((s, x) => s + x.avgDisc, 0) / arr.length;
+    if (baseline > 0) {
+      const live = await Q(`SELECT q.*, c.name customer_name FROM quotations q JOIN customers c ON c.id=q.customer_id
+        WHERE q.rep_id=? AND q.subtotal>0 AND q.status IN ('pending_manager','pending_finance','approved','sent','negotiating')`, [Number(repId)]);
+      for (const q of live) {
+        const avgDisc = r1(q.discount_total / q.subtotal * 100);
+        // early warning needs to be material: over the multiplier AND at least 5 points above the rep's baseline
+        if (avgDisc > baseline * anomalyMult && avgDisc - baseline >= ANOMALY_MIN_GAP) {
+          await RUN(insAlert, ['anomaly', q.id,
+            `${q.number} (${q.customer_name}) in progress at ${avgDisc}% avg discount vs rep baseline ${r1(baseline)}% (×${anomalyMult}) — review before it closes`, 'high']);
+        }
+      }
+    }
   }
+  // backorder: stock has arrived for a backordered line → prompt "Consolidate remaining backorder" automatically
+  const boQuotes = await Q(`SELECT DISTINCT q.id, q.number, c.name customer_name FROM fulfillment_splits fs
+    JOIN quotations q ON q.id=fs.quotation_id JOIN customers c ON c.id=q.customer_id WHERE fs.status='backorder'`);
+  const ready = new Set();
+  for (const q of boQuotes) {
+    if (await canConsolidate(q.id)) {
+      ready.add(q.id);
+      const units = await ONE(`SELECT COALESCE(SUM(qty),0) u FROM fulfillment_splits WHERE quotation_id=? AND status='backorder'`, [q.id]);
+      await RUN(insAlert, ['backorder', q.id, `${q.number} (${q.customer_name}): stock arrived for ${units.u} backordered unit(s) — consolidate remaining backorder`, 'medium']);
+    }
+  }
+  // backorder alerts resolve themselves once consolidated (or when stock is gone again)
+  const openBO = await Q(`SELECT id, quotation_id FROM alerts WHERE kind='backorder' AND status!='dismissed'`);
+  for (const a of openBO) if (!ready.has(a.quotation_id)) await RUN('DELETE FROM alerts WHERE id=?', [a.id]);
   // slippage: confirmed & not fully shipped past promised delivery
   const slipping = await Q(`SELECT q.*, c.name customer_name FROM quotations q JOIN customers c ON c.id=q.customer_id
     WHERE q.status IN ('confirmed','fulfilling') AND q.expected_delivery IS NOT NULL AND EXTRACT(EPOCH FROM (now() AT TIME ZONE 'UTC' - q.expected_delivery::timestamp)) / 86400.0 > ?`, [slipDays]);
@@ -372,9 +473,10 @@ async function nextCommissionNumber() {
 }
 const SCOPE_SPECIFICITY = { product: 4, category: 3, salesperson: 2, team: 1, all: 0 };
 async function generateCommissionsForInvoice(invoiceId, actor) {
-  const inv = await ONE(`SELECT i.*, q.id qid, q.number quote_number, q.margin_pct, q.rep_id, u.name rep_name, u.sales_team
+  const inv = await ONE(`SELECT i.*, q.id qid, q.number quote_number, q.margin_pct, q.rep_id, q.exchange_rate, u.name rep_name, u.sales_team
     FROM invoices i JOIN quotations q ON q.id=i.quotation_id JOIN users u ON u.id=q.rep_id WHERE i.id=?`, [invoiceId]);
   if (!inv || inv.status !== 'paid' || inv.kind === 'credit_note') return [];
+  inv.amount = r2(inv.amount / (inv.exchange_rate || 1)); // commissions are paid in USD — INR invoices convert at the quote's rate
   const already = await ONE('SELECT COUNT(*) c FROM commissions WHERE invoice_id=?', [invoiceId]);
   if (already.c > 0) return [];
   const lines = await Q(`SELECT l.product_id, p.category_id FROM quotation_lines l JOIN products p ON p.id=l.product_id WHERE l.quotation_id=?`, [inv.qid]);
@@ -416,9 +518,24 @@ async function audit(entity, entityId, user, action, details) {
     [entity, entityId, user ? user.id : null, user ? user.name : 'system', action, details || '']);
 }
 
+/* ============ 9. REPLENISHMENT RULES ============ */
+/* Applies the per-warehouse replenishment rules: every stock line at or below its reorder point receives its replenishment lot. */
+async function runReplenishment(warehouseId) {
+  const rows = await Q(`SELECT s.*, p.name product_name, w.name warehouse_name FROM stock_levels s
+    JOIN products p ON p.id=s.product_id JOIN warehouses w ON w.id=s.warehouse_id
+    WHERE w.active AND p.active AND s.replenishment_qty>0 AND s.qty<=s.reorder_point ${warehouseId ? 'AND s.warehouse_id=?' : ''}`, warehouseId ? [warehouseId] : []);
+  const applied = [];
+  for (const s of rows) {
+    await RUN('UPDATE stock_levels SET qty=qty+? WHERE id=?', [s.replenishment_qty, s.id]);
+    applied.push({ stock_id: s.id, warehouse: s.warehouse_name, warehouse_id: s.warehouse_id, product: s.product_name, product_id: s.product_id, added: s.replenishment_qty, from: s.qty, to: s.qty + s.replenishment_qty });
+  }
+  return applied;
+}
+
 module.exports = {
   tierPriceRule, unitPriceFor, allowedDiscountFor, effectiveDiscount, computeRisk, requiredApprovalLevel,
-  recomputeTotals, upsellSuggestions, suggestSplit, canConsolidate, generateBillingOnConfirm,
+  recomputeTotals, upsellSuggestions, suggestSplit, canConsolidate, consolidateBackorders, reservedQty, freeStock,
+  generateBillingOnConfirm, recurringUnitPrice, currentCycle,
   prorateLineChange, cancelSubscriptionCredit, generateDueInvoices, refreshAlerts, repBaselineDiscount,
-  routeForApproval, audit, r1, r2, nextInvoiceNumber, generateCommissionsForInvoice, nextCommissionNumber,
+  routeForApproval, audit, r1, r2, nextInvoiceNumber, generateCommissionsForInvoice, nextCommissionNumber, runReplenishment,
 };

@@ -47,7 +47,21 @@ r.post('/auth/portal/login', async (req, res) => {
   if (!user || !verifyPassword(password || '', user.password)) return res.status(401).json({ error: 'Invalid portal credentials' });
   const token = await createSession(user.id);
   setCookie(res, PORTAL_COOKIE, token, 7 * 86400);
+  await audit('user', user.id, user, 'portal_login', `${user.name} signed in to the customer portal`);
   res.json({ user: { id: user.id, name: user.name, role: 'customer', customer_id: user.customer_id, customer_name: user.customer_name } });
+});
+/* portal session introspection + logout — the portal is its own auth surface (separate cookie) */
+r.get('/auth/portal/me', async (req, res) => {
+  const { parseCookies, userForToken } = require('../util');
+  const u = await userForToken(parseCookies(req)[PORTAL_COOKIE]);
+  if (!u || u.role !== 'customer') return res.status(401).json({ error: 'Portal sign-in required' });
+  res.json({ user: { id: u.id, name: u.name, role: 'customer', customer_id: u.customer_id, customer_name: u.customer_name, customer_tier: u.customer_tier } });
+});
+r.post('/auth/portal/logout', async (req, res) => {
+  const { parseCookies } = require('../util');
+  await destroySession(parseCookies(req)[PORTAL_COOKIE]);
+  clearCookie(res, PORTAL_COOKIE);
+  res.json({ ok: true });
 });
 
 function pubUser(u) {

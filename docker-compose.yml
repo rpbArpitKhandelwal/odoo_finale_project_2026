@@ -1,0 +1,35 @@
+#  DealFlow360 — one-command demo environment
+#    docker compose up --build      →  http://localhost:4300
+#  PostgreSQL data persists in the named volume; `docker compose down -v` resets everything.
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: dealflow
+      POSTGRES_PASSWORD: DealFlow@2026
+      POSTGRES_DB: dealflow360
+    volumes:
+      - dealflow-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dealflow -d dealflow360"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  app:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PGHOST: db
+      PGPORT: 5432
+      PGUSER: dealflow
+      PGPASSWORD: DealFlow@2026
+      PGDATABASE: dealflow360
+      PORT: 4300
+    ports:
+      - "4300:4300"
+
+volumes:
+  dealflow-pg:

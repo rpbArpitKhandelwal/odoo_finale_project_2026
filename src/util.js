@@ -14,8 +14,10 @@ function parseCookies(req) {
   }
   return out;
 }
+/* COOKIE_SECURE=1 (set on HTTPS hosts) adds the Secure flag; local http keeps working without it */
+const SECURE = process.env.COOKIE_SECURE === '1' ? '; Secure' : '';
 function setCookie(res, name, value, maxAgeSec) {
-  res.setHeader('Set-Cookie', `${name}=${encodeURIComponent(value)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAgeSec}`);
+  res.setHeader('Set-Cookie', `${name}=${encodeURIComponent(value)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAgeSec}${SECURE}`);
 }
 function clearCookie(res, name) { setCookie(res, name, '', 0); }
 
